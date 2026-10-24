@@ -1,101 +1,106 @@
 //! JNI bridge exposed to Kotlin as `dev.kr1901.openvid.engine.NativeEngine`.
 //!
-//! Both entry points run synchronously on the calling JVM thread and return
-//! JSON / a boolean, so no async runtime is needed at the boundary. Panics are
-//! caught so they can never unwind across the FFI edge.
+//! jni 0.22 changed how native methods are declared. The first argument is now
+//! an [`EnvUnowned`] (an FFI-safe wrapper around the raw env pointer) which is
+//! upgraded to a `&mut Env` inside [`EnvUnowned::with_env`]. The resulting
+//! [`EnvOutcome`] is mapped back to Java by an `ErrorPolicy` — here
+//! `ThrowRuntimeExAndDefault`, which turns errors and panics into a Java
+//! `RuntimeException` and returns the type's default value.
+//!
+//! `with_env` already wraps the closure in `catch_unwind`, so no manual panic
+//! guarding is needed.
 
-use jni::objects::{JObject, JString, JValue};
-use jni::sys::{jboolean, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
-use jni::JNIEnv;
-use std::panic;
+use jni::objects::{Global, JObject, JString};
+use jni::sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE};
+use jni::{jni_sig, jni_str, EnvUnowned, JValue, JavaVM};
 use std::path::PathBuf;
 
 use crate::downloader::DownloadRequest;
 
 /// Returns a JSON `MediaInfo` on success, or `{"error": "..."}` on failure.
 #[no_mangle]
-pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_extractFormats(
-    mut env: JNIEnv,
-    _this: JObject,
-    url: JString,
-) -> jstring {
-    let outcome = panic::catch_unwind(panic::AssertUnwindSafe(|| -> Result<String, String> {
-        let input: String = env.get_string(&url).map_err(|e| e.to_string())?.into();
-        let client = crate::extractor::client().map_err(|e| e.to_string())?;
-        let info = crate::extractor::extract(&client, &input).map_err(|e| e.to_string())?;
-        serde_json::to_string(&info).map_err(|e| e.to_string())
-    }));
+pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_extractFormats<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    url: JString<'local>,
+) -> JString<'local> {
+    unowned_env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let input: String = url.to_string();
+            let payload = extract_payload(&input);
+            env.new_string(payload)
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
 
-    let payload = match outcome {
-        Ok(Ok(json)) => json,
-        Ok(Err(msg)) => serde_json::json!({ "error": msg }).to_string(),
-        Err(_) => serde_json::json!({ "error": "internal error while extracting" }).to_string(),
-    };
+fn extract_payload(input: &str) -> String {
+    let result = (|| -> anyhow::Result<String> {
+        let client = crate::extractor::client()?;
+        let info = crate::extractor::extract(&client, input)?;
+        Ok(serde_json::to_string(&info)?)
+    })();
 
-    match env.new_string(payload) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
+    match result {
+        Ok(json) => json,
+        Err(e) => serde_json::json!({ "error": e.to_string() }).to_string(),
     }
 }
 
 /// Downloads `url` to `dest`, reporting progress to `callback.onProgress`.
 /// Returns `true` on success.
 #[no_mangle]
-pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_download(
-    mut env: JNIEnv,
-    _this: JObject,
-    url: JString,
-    dest: JString,
+pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_download<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    url: JString<'local>,
+    dest: JString<'local>,
     connections: jint,
     total_hint: jlong,
-    callback: JObject,
+    callback: JObject<'local>,
 ) -> jboolean {
-    let url: String = match env.get_string(&url) {
-        Ok(s) => s.into(),
-        Err(_) => return JNI_FALSE,
-    };
-    let dest: String = match env.get_string(&dest) {
-        Ok(s) => s.into(),
-        Err(_) => return JNI_FALSE,
+    unowned_env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let url: String = url.to_string();
+            let dest: String = dest.to_string();
+            let callback: Global<JObject<'static>> = env.new_global_ref(callback)?;
+
+            let protocol = if url.contains(".m3u8") { "hls" } else { "direct" };
+            let req = DownloadRequest {
+                url,
+                dest: PathBuf::from(dest),
+                connections: if connections < 1 { 1 } else { connections as usize },
+                protocol: protocol.to_string(),
+                total_hint: if total_hint > 0 { Some(total_hint as u64) } else { None },
+            };
+
+            let ok = run_download(&req, &callback);
+            Ok(if ok { JNI_TRUE } else { JNI_FALSE })
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+fn run_download(req: &DownloadRequest, callback: &Global<JObject<'static>>) -> bool {
+    let client = match crate::extractor::client() {
+        Ok(client) => client,
+        Err(_) => return false,
     };
 
-    let vm = match env.get_java_vm() {
-        Ok(v) => v,
-        Err(_) => return JNI_FALSE,
-    };
-    let callback = match env.new_global_ref(callback) {
-        Ok(c) => c,
-        Err(_) => return JNI_FALSE,
-    };
-
-    let protocol = if url.contains(".m3u8") { "hls" } else { "direct" };
-    let req = DownloadRequest {
-        url,
-        dest: PathBuf::from(dest),
-        connections: if connections < 1 { 1 } else { connections as usize },
-        protocol: protocol.to_string(),
-        total_hint: if total_hint > 0 { Some(total_hint as u64) } else { None },
-    };
-
-    let outcome = panic::catch_unwind(panic::AssertUnwindSafe(|| -> anyhow::Result<()> {
-        let client = crate::extractor::client()?;
-        let progress = |downloaded: u64, total: u64| {
-            // `get_env` returns the existing env for this thread without
-            // attaching/detaching, so it is safe to call repeatedly here.
-            if let Ok(mut e) = vm.get_env() {
-                let _ = e.call_method(
-                    &callback,
-                    "onProgress",
-                    "(JJ)V",
+    // Progress is only ever reported on the calling (JVM) thread. That thread is
+    // already attached to the JVM, so re-attaching is cheap and pushes a fresh
+    // local frame for the callback.
+    let progress = |downloaded: u64, total: u64| {
+        if let Ok(jvm) = JavaVM::singleton() {
+            let _ = jvm.attach_current_thread(|env| -> jni::errors::Result<()> {
+                env.call_method(
+                    callback,
+                    jni_str!("onProgress"),
+                    jni_sig!("(JJ)V"),
                     &[JValue::Long(downloaded as i64), JValue::Long(total as i64)],
-                );
-            }
-        };
-        crate::downloader::download(&client, &req, &progress)
-    }));
+                )?;
+                Ok(())
+            });
+        }
+    };
 
-    match outcome {
-        Ok(Ok(())) => JNI_TRUE,
-        _ => JNI_FALSE,
-    }
+    crate::downloader::download(&client, req, &progress).is_ok()
 }
