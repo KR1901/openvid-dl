@@ -31,6 +31,21 @@ internal fun fileNameOf(url: String): String {
     return name?.takeIf { it.isNotBlank() } ?: url
 }
 
+// Media detection is deliberately generous: a URL counts as media if it carries
+// a recognisable token anywhere (many CDNs sign URLs with no file extension),
+// unless it is clearly an image, stylesheet or script.
+private val MEDIA_STRONG = Regex(
+    """(?i)(\.(m3u8|mpd|mp4|webm|mkv|m4s|m4v|mov|3gp)\b|videoplayback|mime=video|mime%3dvideo)"""
+)
+private val MEDIA_WEAK = Regex("""(?i)\.(ts|m4a|mp3|aac|ogg|opus)(\?|#|$)""")
+private val NON_MEDIA = Regex(
+    """(?i)\.(jpe?g|png|gif|webp|svg|css|js|mjs|woff2?|ttf|otf|ico|json|xml)(\?|#|$)"""
+)
+
+internal fun looksLikeMedia(url: String): Boolean =
+    (MEDIA_STRONG.containsMatchIn(url) || MEDIA_WEAK.containsMatchIn(url)) &&
+        !NON_MEDIA.containsMatchIn(url)
+
 /** One open tab: its own WebView, history and list of detected videos. */
 class BrowserTab(val id: Int, startUrl: String) {
     var url by mutableStateOf(startUrl)
@@ -65,6 +80,10 @@ class BrowserController(private val context: Context) {
     var activeIndex by mutableIntStateOf(0)
         private set
 
+    /** When true, pages are requested with a desktop user agent. */
+    var desktopMode by mutableStateOf(false)
+        private set
+
     private var nextId = 1
 
     init {
@@ -81,14 +100,21 @@ class BrowserController(private val context: Context) {
         return tab
     }
 
-    fun closeTab(index: Int) {
-        if (index !in tabs.indices) return
-        val tab = tabs[index]
+    fun openInNewTab(url: String) {
+        openTab(url)
+    }
+
+    private fun destroy(tab: BrowserTab) {
         tab.webView?.let { view ->
             (view.parent as? ViewGroup)?.removeView(view)
             view.destroy()
         }
         tab.webView = null
+    }
+
+    fun closeTab(index: Int) {
+        if (index !in tabs.indices) return
+        destroy(tabs[index])
         tabs.removeAt(index)
         if (tabs.isEmpty()) {
             openTab(HOME_URL)
@@ -97,8 +123,22 @@ class BrowserController(private val context: Context) {
         if (activeIndex >= tabs.size) activeIndex = tabs.lastIndex
     }
 
+    fun closeAllTabs() {
+        tabs.forEach { destroy(it) }
+        tabs.clear()
+        openTab(HOME_URL)
+    }
+
     fun selectTab(index: Int) {
         if (index in tabs.indices) activeIndex = index
+    }
+
+    /** Flip between mobile and desktop user agents and reload the active page. */
+    fun toggleDesktopMode() {
+        desktopMode = !desktopMode
+        val ua = if (desktopMode) DESKTOP_UA else null
+        tabs.forEach { it.webView?.settings?.userAgentString = ua }
+        active.webView?.reload()
     }
 
     /** Navigate the active tab to [target]: a URL, a bare domain, or a search. */
@@ -168,6 +208,7 @@ class BrowserController(private val context: Context) {
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             setSupportMultipleWindows(false)
+            if (desktopMode) userAgentString = DESKTOP_UA
         }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
@@ -178,7 +219,7 @@ class BrowserController(private val context: Context) {
                 request: WebResourceRequest,
             ): WebResourceResponse? {
                 val url = request.url.toString()
-                if (MEDIA_REGEX.containsMatchIn(url)) addDetected(tab, url)
+                if (looksLikeMedia(url)) addDetected(tab, url)
                 return super.shouldInterceptRequest(view, request)
             }
 
@@ -224,9 +265,9 @@ class BrowserController(private val context: Context) {
     }
 
     companion object {
-        private val MEDIA_REGEX = Regex(
-            """(?i)(\.(m3u8|mpd|mp4|webm|mkv|mov|m4v|m4s|ts|3gp|m4a|mp3|aac|ogg|opus)(\?|#|$))|(videoplayback)|(mime=video)"""
-        )
+        private const val DESKTOP_UA =
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
         private const val PROBE_JS = """
             (function () {

@@ -1,5 +1,9 @@
 package dev.kr1901.openvid.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -18,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,12 +38,19 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
@@ -64,10 +76,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -154,23 +170,25 @@ fun BrowserScreen(
         }
     }
 
-    // One back handler: close the tab switcher first, then walk page history.
-    BackHandler(enabled = showTabs || tab.canGoBack) {
+    // Back: leave the keyboard, then the tab switcher, then page history.
+    BackHandler(enabled = editing || showTabs || tab.canGoBack) {
         when {
+            editing -> editing = false
             showTabs -> showTabs = false
             else -> controller.back()
         }
     }
 
-    // Probe the active page for media every few seconds.
+    // Probe the active page for media; reset the address editor on tab change.
     LaunchedEffect(tab.id) {
+        editing = false
         while (true) {
             delay(2500)
             controller.probe()
         }
     }
 
-    Column(modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             AndroidView(
                 factory = { controller.ensureWebView(tab) },
@@ -198,27 +216,24 @@ fun BrowserScreen(
         }
 
         BrowserBottomBar(
+            controller = controller,
             tab = tab,
             editing = editing,
-            tabCount = controller.tabs.size,
             onStartEditing = { editing = true },
             onStopEditing = { editing = false },
             onGo = { controller.go(it) },
-            onBack = { controller.back() },
             onDownload = {
                 selected = null
                 picked.clear()
                 showSheet = true
             },
             onTabs = { showTabs = true },
+            onMessage = onMessage,
         )
     }
 
     if (showTabs) {
-        TabsOverlay(
-            controller = controller,
-            onDismiss = { showTabs = false },
-        )
+        TabsOverlay(controller = controller, onDismiss = { showTabs = false })
     }
 
     if (showSheet) {
@@ -319,8 +334,9 @@ fun BrowserScreen(
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "Play the video for a moment so the page starts streaming, " +
-                                "or try extracting from the page link itself.",
+                            "Play the video for a moment so the page starts streaming, or try " +
+                                "extracting from the page link itself. If a site hides the video, " +
+                                "try the desktop-site option from the browser menu.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -409,16 +425,19 @@ fun BrowserScreen(
 
 @Composable
 private fun BrowserBottomBar(
+    controller: BrowserController,
     tab: BrowserTab,
     editing: Boolean,
-    tabCount: Int,
     onStartEditing: () -> Unit,
     onStopEditing: () -> Unit,
     onGo: (String) -> Unit,
-    onBack: () -> Unit,
     onDownload: () -> Unit,
     onTabs: () -> Unit,
+    onMessage: (String) -> Unit,
 ) {
+    val context = LocalContext.current
+    var menuOpen by remember { mutableStateOf(false) }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
@@ -430,16 +449,21 @@ private fun BrowserBottomBar(
                 .padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack, enabled = tab.canGoBack) {
+            IconButton(onClick = { controller.back() }, enabled = tab.canGoBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
 
             if (editing) {
-                var text by remember(tab.url) { mutableStateOf(tab.url) }
+                val focusRequester = remember { FocusRequester() }
+                var value by remember(tab.url) {
+                    mutableStateOf(TextFieldValue(tab.url, TextRange(0, tab.url.length)))
+                }
+                LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
                 OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.weight(1f),
+                    value = value,
+                    onValueChange = { value = it },
+                    modifier = Modifier.weight(1f).focusRequester(focusRequester),
                     singleLine = true,
                     shape = MaterialTheme.shapes.large,
                     textStyle = MaterialTheme.typography.bodyMedium,
@@ -449,7 +473,7 @@ private fun BrowserBottomBar(
                         imeAction = ImeAction.Go,
                     ),
                     keyboardActions = KeyboardActions(onGo = {
-                        onGo(text)
+                        onGo(value.text)
                         onStopEditing()
                     }),
                     trailingIcon = {
@@ -460,7 +484,7 @@ private fun BrowserBottomBar(
                 )
                 Spacer(Modifier.width(4.dp))
                 FilledIconButton(onClick = {
-                    onGo(text)
+                    onGo(value.text)
                     onStopEditing()
                 }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Go")
@@ -468,6 +492,7 @@ private fun BrowserBottomBar(
             } else {
                 AddressPill(tab = tab, onClick = onStartEditing, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(4.dp))
+
                 Box {
                     IconButton(onClick = onDownload) {
                         Icon(Icons.Filled.Download, contentDescription = "Download")
@@ -478,7 +503,68 @@ private fun BrowserBottomBar(
                     IconButton(onClick = onTabs) {
                         Icon(Icons.Filled.Tab, contentDescription = "Tabs")
                     }
-                    CountBadge(count = tabCount, showWhenOne = false, modifier = Modifier.align(Alignment.TopEnd))
+                    CountBadge(count = controller.tabs.size, showWhenOne = false, modifier = Modifier.align(Alignment.TopEnd))
+                }
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text(if (controller.desktopMode) "Mobile site" else "Desktop site") },
+                            leadingIcon = {
+                                Icon(
+                                    if (controller.desktopMode) Icons.Filled.Smartphone else Icons.Filled.DesktopWindows,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                controller.toggleDesktopMode()
+                                menuOpen = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Reload") },
+                            leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
+                            onClick = {
+                                controller.reload()
+                                menuOpen = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy link") },
+                            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                            onClick = {
+                                copyLink(context, tab.url)
+                                onMessage("Link copied")
+                                menuOpen = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share") },
+                            leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                            onClick = {
+                                shareLink(context, tab.url)
+                                menuOpen = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open in new tab") },
+                            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                            onClick = {
+                                controller.openInNewTab(tab.url)
+                                menuOpen = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Close tab") },
+                            leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
+                            onClick = {
+                                controller.closeTab(controller.activeIndex)
+                                menuOpen = false
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -544,10 +630,7 @@ private fun BoxScope.MediaChip(count: Int, onClick: () -> Unit) {
         exit = fadeOut() + slideOutVertically { it / 2 },
         modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
     ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary,
-        ) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
             Row(
                 Modifier
                     .clickable(onClick = onClick)
@@ -591,7 +674,13 @@ private fun TabsOverlay(controller: BrowserController, onDismiss: () -> Unit) {
                 }) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("New tab")
+                    Text("New")
+                }
+                TextButton(onClick = {
+                    controller.closeAllTabs()
+                    onDismiss()
+                }) {
+                    Text("Close all")
                 }
                 TextButton(onClick = onDismiss) { Text("Done") }
             }
@@ -655,4 +744,17 @@ private fun TabsOverlay(controller: BrowserController, onDismiss: () -> Unit) {
             }
         }
     }
+}
+
+private fun copyLink(context: Context, url: String) {
+    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    manager.setPrimaryClip(ClipData.newPlainText("url", url))
+}
+
+private fun shareLink(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, url)
+    }
+    context.startActivity(Intent.createChooser(intent, "Share link"))
 }

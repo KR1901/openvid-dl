@@ -11,9 +11,13 @@ page in the built-in browser, and download any — or every — video on it.
 
 ## What it does
 
-- **A real mobile browser.** Multiple tabs, each with its own page, history and
-  list of detected videos. The address bar sits at the bottom where your thumb
-  is, and the tab switcher is one tap away.
+- **A real mobile browser.** Multiple tabs (new / close / close all), each with
+  its own page, history and list of detected videos. The address bar sits at the
+  bottom where your thumb is, the tab switcher is one tap away, and the bar lifts
+  above the keyboard while you type.
+- **Useful browser controls.** A menu with a desktop-site toggle (helpful on
+  sites that hide video from mobile), reload, copy link, share, open in new tab
+  and close tab.
 - **Find every video on a page.** The built-in browser watches network traffic
   *and* probes the DOM for `<video>` / `<audio>` / `<source>` elements, so a page
   with ten videos lists all ten.
