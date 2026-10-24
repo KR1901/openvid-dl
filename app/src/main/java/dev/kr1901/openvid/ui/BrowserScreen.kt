@@ -10,6 +10,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -144,8 +145,7 @@ fun BrowserScreen(
             address = controller.address,
             secure = controller.secure,
             loading = controller.loading,
-            onAddressChange = { /* handled inside AddressBar */ },
-            onGo = { controller.go(controller.address) },
+            onGo = { target -> controller.go(target) },
             onReload = { controller.reload() },
         )
         AnimatedVisibility(visible = controller.loading) {
@@ -161,20 +161,14 @@ fun BrowserScreen(
                 modifier = Modifier.fillMaxSize(),
             )
 
-            AnimatedVisibility(
+            MediaFab(
                 visible = controller.detected.isNotEmpty(),
-                enter = fadeIn() + slideInVertically { it / 2 },
-                exit = fadeOut() + slideOutVertically { it / 2 },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-            ) {
-                ExtendedFloatingActionButton(
-                    onClick = { selected = null; showSheet = true },
-                    icon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                    text = { Text("Download (${controller.detected.size})") },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                )
-            }
+                count = controller.detected.size,
+                onClick = {
+                    selected = null
+                    showSheet = true
+                },
+            )
         }
     }
 
@@ -304,8 +298,7 @@ private fun AddressBar(
     address: String,
     secure: Boolean,
     loading: Boolean,
-    onAddressChange: (String) -> Unit,
-    onGo: () -> Unit,
+    onGo: (String) -> Unit,
     onReload: () -> Unit,
 ) {
     var text by remember(address) { mutableStateOf(address) }
@@ -324,7 +317,7 @@ private fun AddressBar(
         ) {
             OutlinedTextField(
                 value = text,
-                onValueChange = { text = it; onAddressChange(it) },
+                onValueChange = { text = it },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 shape = RoundedCornerShape(24.dp),
@@ -348,15 +341,33 @@ private fun AddressBar(
                     keyboardType = KeyboardType.Uri,
                     imeAction = ImeAction.Go,
                 ),
-                keyboardActions = KeyboardActions(onGo = { onGo() }),
+                keyboardActions = KeyboardActions(onGo = { onGo(text) }),
             )
-            FilledIconButton(onClick = { if (loading) onReload() else onGo() }) {
+            FilledIconButton(onClick = { if (loading) onReload() else onGo(text) }) {
                 Icon(
                     if (loading) Icons.Filled.Refresh else Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = if (loading) "Reload" else "Go",
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun BoxScope.MediaFab(visible: Boolean, count: Int, onClick: () -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + slideInVertically { it / 2 },
+        exit = fadeOut() + slideOutVertically { it / 2 },
+        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+    ) {
+        ExtendedFloatingActionButton(
+            onClick = onClick,
+            icon = { Icon(Icons.Filled.Download, contentDescription = null) },
+            text = { Text("Download ($count)") },
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+        )
     }
 }
 
