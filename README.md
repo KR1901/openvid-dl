@@ -65,7 +65,7 @@ audio always comes along.
 │       └── AndroidManifest.xml
 ├── rust/                      Native engine (Rust)
 │   └── src/{lib,extractor,downloader,hls,android,model,util}.rs  + bin/cli.rs
-├── build.gradle.kts           root Gradle config (AGP 8.10.1, Kotlin 2.1.20)
+├── build.gradle.kts           root Gradle config (AGP 9.4.1, Kotlin 2.4.21)
 ├── settings.gradle.kts
 └── gradle/                    Gradle wrapper
 ```
