@@ -5,36 +5,43 @@
 //! deliberately out of scope for the native engine (see the roadmap).
 
 use anyhow::{bail, Context, Result};
-use reqwest::blocking::Client;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use url::Url;
+use ureq::Agent;
+
+use crate::extractor::UA;
 
 pub fn download(
-    client: &Client,
+    agent: &Agent,
     url: &str,
     dest: &Path,
     connections: usize,
     progress: &dyn Fn(u64, u64),
 ) -> Result<()> {
     let base = Url::parse(url).context("invalid HLS URL")?;
-    let text = client
+
+    let mut resp = agent
         .get(url)
-        .send()
-        .context("failed to fetch the HLS playlist")?
-        .text()
+        .header("User-Agent", UA)
+        .call()
+        .context("failed to fetch the HLS playlist")?;
+    let text = resp
+        .body_mut()
+        .read_to_string()
         .context("failed to read the playlist")?;
 
     let (media_url, media_text) = if text.contains("#EXT-X-STREAM-INF") {
         let variant = pick_variant(&text, &base)?;
-        let t = client
-            .get(variant.clone())
-            .send()
-            .context("failed to fetch the HLS variant playlist")?
-            .text()?;
+        let mut r = agent
+            .get(variant.as_str())
+            .header("User-Agent", UA)
+            .call()
+            .context("failed to fetch the HLS variant playlist")?;
+        let t = r.body_mut().read_to_string()?;
         (variant, t)
     } else {
         (base.clone(), text)
@@ -53,22 +60,24 @@ pub fn download(
         .iter()
         .enumerate()
         .map(|(i, seg)| {
-            let client = client.clone();
+            let agent = agent.clone();
             let seg = seg.clone();
             let path = parts.join(format!("{i:06}.ts"));
             let done = done.clone();
             move || -> Result<()> {
-                let mut resp = client
+                let resp = agent
                     .get(&seg)
-                    .send()
+                    .header("User-Agent", UA)
+                    .call()
                     .with_context(|| format!("segment {i} failed"))?;
                 if !resp.status().is_success() {
-                    bail!("segment {i} returned HTTP {}", resp.status());
+                    bail!("segment {i} returned HTTP {}", resp.status().as_u16());
                 }
                 let mut file = File::create(&path)?;
+                let mut reader = resp.into_body().into_reader();
                 let mut buf = [0u8; 64 * 1024];
                 loop {
-                    let n = resp.read(&mut buf)?;
+                    let n = reader.read(&mut buf)?;
                     if n == 0 {
                         break;
                     }
@@ -101,7 +110,11 @@ fn pick_variant(text: &str, base: &Url) -> Result<Url> {
         if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
             let bw = rest
                 .split(',')
-                .find_map(|p| p.trim().strip_prefix("BANDWIDTH=").and_then(|v| v.trim().parse::<u64>().ok()))
+                .find_map(|p| {
+                    p.trim()
+                        .strip_prefix("BANDWIDTH=")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                })
                 .unwrap_or(0);
             if let Some(next) = lines.get(i + 1) {
                 let next = next.trim();

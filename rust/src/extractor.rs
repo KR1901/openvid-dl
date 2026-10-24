@@ -1,86 +1,100 @@
 //! Format discovery.
 //!
-//! This is deliberately a *native, best-effort* extractor: it recognises direct
-//! media links, the common HTML5 `<video>`/`<source>`/OpenGraph patterns, and
-//! HLS (`.m3u8`) playlists. It does not attempt the per-site reverse
-//! engineering that `yt-dlp` does — see the README for what that means for
-//! site coverage.
+//! Best-effort and native: it recognises direct media links, the common HTML5
+//! `<video>`/`<source>`/OpenGraph patterns, and HLS (`.m3u8`) playlists. It does
+//! not attempt the per-site reverse engineering that `yt-dlp` does.
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
-use reqwest::blocking::Client;
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use std::collections::HashSet;
+use std::io::Read;
 use std::time::Duration;
 use url::Url;
+use ureq::Agent;
 
 use crate::model::{Format, MediaInfo};
-use crate::util::{guess_ext, head, title_from_url};
+use crate::util::{guess_ext, title_from_url};
 
-const UA: &str = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 \
+pub const UA: &str = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 \
 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 
-/// HTTP client used for both discovery and downloading. No total timeout, so a
-/// large download is never cut off; only connection setup is bounded.
-pub fn client() -> Result<Client> {
-    Client::builder()
-        .user_agent(UA)
-        .connect_timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::limited(10))
+/// HTTP agent used for both discovery and downloading.
+///
+/// No global timeout, so a large download is never cut off; only connection
+/// setup is bounded. `http_status_as_error` is off so we can inspect 4xx/5xx
+/// (and 206 partial content) ourselves.
+pub fn client() -> Result<Agent> {
+    let agent: Agent = Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(20)))
+        .http_status_as_error(false)
         .build()
-        .context("failed to build the HTTP client")
+        .into();
+    Ok(agent)
 }
 
-pub fn extract(client: &Client, input: &str) -> Result<MediaInfo> {
+pub fn extract(agent: &Agent, input: &str) -> Result<MediaInfo> {
     let url = Url::parse(input).context("that does not look like a valid URL")?;
     if url.scheme() != "http" && url.scheme() != "https" {
         bail!("only http(s) URLs are supported");
     }
 
     // A direct link to a media file needs no scraping.
-    if let Some(fmt) = direct_format(client, &url) {
+    if let Some(fmt) = direct_format(agent, &url) {
         return Ok(MediaInfo {
             title: title_from_url(&url),
             formats: vec![fmt],
         });
     }
 
-    let resp = client.get(url.clone()).send().context("failed to fetch the page")?;
-    if !resp.status().is_success() {
-        bail!("the site returned HTTP {}", resp.status());
+    let mut resp = agent
+        .get(url.as_str())
+        .header("User-Agent", UA)
+        .call()
+        .context("failed to fetch the page")?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("the site returned HTTP {}", status.as_u16());
     }
 
-    let final_url = resp.url().clone();
     let ctype = resp
         .headers()
-        .get(CONTENT_TYPE)
+        .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
     let clen = resp
         .headers()
-        .get(CONTENT_LENGTH)
+        .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
 
     if ctype.contains("mpegurl") {
         return Ok(MediaInfo {
-            title: title_from_url(&final_url),
-            formats: vec![hls_format(&final_url)],
+            title: title_from_url(&url),
+            formats: vec![hls_format(&url)],
         });
     }
     if ctype.starts_with("video/") || ctype.starts_with("audio/") {
-        let ext = guess_ext(&ctype, &final_url);
+        let ext = guess_ext(&ctype, &url);
         return Ok(MediaInfo {
-            title: title_from_url(&final_url),
-            formats: vec![media_format(&final_url, &ext, clen, "direct", "direct link")],
+            title: title_from_url(&url),
+            formats: vec![media_format(&url, &ext, clen, "direct", "direct link")],
         });
     }
 
-    let body = resp.text().context("failed to read the page")?;
-    let html = head(&body, 3_000_000);
-    let mut formats = scrape(html, &final_url);
-    formats.truncate(60);
+    // Read at most 3 MB of HTML — enough for any head, and it bounds memory.
+    let mut reader = resp.body_mut().as_reader();
+    let mut buf = Vec::new();
+    reader
+        .by_ref()
+        .take(3_000_000)
+        .read_to_end(&mut buf)
+        .context("failed to read the page")?;
+    let body = String::from_utf8_lossy(&buf);
+
+    let mut formats = scrape(&body, &url);
+    formats.truncate(80);
     if formats.is_empty() {
         bail!(
             "no downloadable media was found on this page. The native extractor \
@@ -89,18 +103,18 @@ pub fn extract(client: &Client, input: &str) -> Result<MediaInfo> {
         );
     }
 
-    let title = html_title(html).unwrap_or_else(|| title_from_url(&final_url));
+    let title = html_title(&body).unwrap_or_else(|| title_from_url(&url));
     Ok(MediaInfo { title, formats })
 }
 
-fn direct_format(client: &Client, url: &Url) -> Option<Format> {
+fn direct_format(agent: &Agent, url: &Url) -> Option<Format> {
     let path = url.path().to_ascii_lowercase();
     if path.ends_with(".m3u8") {
         return Some(hls_format(url));
     }
-    const EXTS: [&str; 15] = [
-        "mp4", "webm", "mkv", "m4v", "mov", "flv", "ts", "mp3", "m4a", "aac", "ogg", "opus", "wav",
-        "mpd", "3gp",
+    const EXTS: [&str; 16] = [
+        "mp4", "webm", "mkv", "m4v", "mov", "flv", "ts", "m4s", "mpd", "3gp", "mp3", "m4a", "aac",
+        "ogg", "opus", "wav",
     ];
     for ext in EXTS {
         if path.ends_with(&format!(".{ext}")) {
@@ -114,7 +128,7 @@ fn direct_format(client: &Client, url: &Url) -> Option<Format> {
                 height: None,
                 width: None,
                 bitrate: None,
-                filesize: head_size(client, url),
+                filesize: head_size(agent, url),
                 note: "direct link".into(),
             });
         }
@@ -122,12 +136,18 @@ fn direct_format(client: &Client, url: &Url) -> Option<Format> {
     None
 }
 
-fn head_size(client: &Client, url: &Url) -> Option<u64> {
-    client
-        .head(url.clone())
-        .send()
+fn head_size(agent: &Agent, url: &Url) -> Option<u64> {
+    agent
+        .head(url.as_str())
+        .header("User-Agent", UA)
+        .call()
         .ok()
-        .and_then(|r| r.headers().get(CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()))
+        .and_then(|r| {
+            r.headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+        })
 }
 
 fn scrape(html: &str, base: &Url) -> Vec<Format> {
@@ -137,8 +157,9 @@ fn scrape(html: &str, base: &Url) -> Vec<Format> {
         r#"(?i)<meta[^>]+name=["']twitter:player:stream["'][^>]+content=["']([^"']+)["']"#,
         r#"(?i)<video[^>]+src=["']([^"']+)["']"#,
         r#"(?i)<source[^>]+src=["']([^"']+)["']"#,
+        r#"(?i)<video[^>]+data-src=["']([^"']+)["']"#,
         r#"(?i)["'](https?://[^"']+?\.m3u8[^"']*)["']"#,
-        r#"(?i)["'](https?://[^"']+?\.(?:mp4|webm|mkv|m4v|mov|mp3|m4a|ts)(?:\?[^"']*)?)["']"#,
+        r#"(?i)["'](https?://[^"']+?\.(?:mp4|webm|mkv|m4v|mov|mp3|m4a|ts|m4s)(?:\?[^"']*)?)["']"#,
         r#"(?i)["']([^"']+?\.m3u8[^"']*)["']"#,
     ];
 

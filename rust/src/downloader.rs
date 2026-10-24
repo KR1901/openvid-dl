@@ -6,8 +6,6 @@
 //! only, which keeps the JNI callback on the JVM thread that started the call.
 
 use anyhow::{anyhow, bail, Context, Result};
-use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use ureq::Agent;
+
+use crate::extractor::UA;
 
 pub struct DownloadRequest {
     pub url: String,
@@ -24,13 +25,13 @@ pub struct DownloadRequest {
     pub total_hint: Option<u64>,
 }
 
-pub fn download(client: &Client, req: &DownloadRequest, progress: &dyn Fn(u64, u64)) -> Result<()> {
+pub fn download(agent: &Agent, req: &DownloadRequest, progress: &dyn Fn(u64, u64)) -> Result<()> {
     if let Some(parent) = req.dest.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     match req.protocol.as_str() {
-        "hls" => crate::hls::download(client, &req.url, &req.dest, req.connections, progress),
-        _ => download_http(client, req, progress),
+        "hls" => crate::hls::download(agent, &req.url, &req.dest, req.connections, progress),
+        _ => download_http(agent, req, progress),
     }
 }
 
@@ -39,16 +40,16 @@ struct Probe {
     ranges: bool,
 }
 
-fn probe(client: &Client, url: &str) -> Result<Probe> {
-    if let Ok(resp) = client.head(url).send() {
+fn probe(agent: &Agent, url: &str) -> Result<Probe> {
+    if let Ok(resp) = agent.head(url).header("User-Agent", UA).call() {
         if resp.status().is_success() {
-            let h = resp.headers();
-            let total = h
-                .get(CONTENT_LENGTH)
+            let headers = resp.headers();
+            let total = headers
+                .get("content-length")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok());
-            let ranges = h
-                .get(ACCEPT_RANGES)
+            let ranges = headers
+                .get("accept-ranges")
                 .and_then(|v| v.to_str().ok())
                 .map(|v| v.to_ascii_lowercase().contains("bytes"))
                 .unwrap_or(false);
@@ -58,20 +59,21 @@ fn probe(client: &Client, url: &str) -> Result<Probe> {
         }
     }
 
-    let resp = client
+    let resp = agent
         .get(url)
-        .header(RANGE, "bytes=0-0")
-        .send()
+        .header("User-Agent", UA)
+        .header("Range", "bytes=0-0")
+        .call()
         .context("failed to reach the media URL")?;
-    let ranges = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let ranges = resp.status().as_u16() == 206;
     let total = resp
         .headers()
-        .get(CONTENT_RANGE)
+        .get("content-range")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_total)
         .or_else(|| {
             resp.headers()
-                .get(CONTENT_LENGTH)
+                .get("content-length")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
         });
@@ -82,8 +84,8 @@ fn parse_total(value: &str) -> Option<u64> {
     value.rsplit('/').next()?.trim().parse::<u64>().ok()
 }
 
-fn download_http(client: &Client, req: &DownloadRequest, progress: &dyn Fn(u64, u64)) -> Result<()> {
-    let probe = probe(client, &req.url)?;
+fn download_http(agent: &Agent, req: &DownloadRequest, progress: &dyn Fn(u64, u64)) -> Result<()> {
+    let probe = probe(agent, &req.url)?;
     let known_total = probe.total.or(req.total_hint);
 
     if probe.ranges && req.connections > 1 && probe.total.is_some() {
@@ -111,43 +113,45 @@ fn download_http(client: &Client, req: &DownloadRequest, progress: &dyn Fn(u64, 
         let jobs: Vec<_> = ranges
             .into_iter()
             .map(|(start, end)| {
-                let client = client.clone();
+                let agent = agent.clone();
                 let url = req.url.clone();
                 let dest = req.dest.clone();
                 let done = done.clone();
-                move || fetch_range(&client, &url, &dest, start, end, &done)
+                move || fetch_range(&agent, &url, &dest, start, end, &done)
             })
             .collect();
 
         run_parallel(jobs, done, total, progress)
     } else {
-        single_stream(client, req, known_total.unwrap_or(0), progress)
+        single_stream(agent, req, known_total.unwrap_or(0), progress)
     }
 }
 
 fn fetch_range(
-    client: &Client,
+    agent: &Agent,
     url: &str,
     dest: &Path,
     start: u64,
     end: u64,
     done: &AtomicU64,
 ) -> Result<()> {
-    let mut resp = client
+    let resp = agent
         .get(url)
-        .header(RANGE, format!("bytes={start}-{end}"))
-        .send()
+        .header("User-Agent", UA)
+        .header("Range", format!("bytes={start}-{end}"))
+        .call()
         .with_context(|| format!("range {start}-{end} request failed"))?;
     if !resp.status().is_success() {
-        bail!("range {start}-{end} returned HTTP {}", resp.status());
+        bail!("range {start}-{end} returned HTTP {}", resp.status().as_u16());
     }
 
     let mut file = OpenOptions::new().write(true).open(dest)?;
     file.seek(SeekFrom::Start(start))?;
 
+    let mut reader = resp.into_body().into_reader();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = resp.read(&mut buf)?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -158,26 +162,32 @@ fn fetch_range(
 }
 
 fn single_stream(
-    client: &Client,
+    agent: &Agent,
     req: &DownloadRequest,
     total: u64,
     progress: &dyn Fn(u64, u64),
 ) -> Result<()> {
-    let client = client.clone();
+    let agent = agent.clone();
     let url = req.url.clone();
     let dest = req.dest.clone();
     let done = Arc::new(AtomicU64::new(0));
     let counter = done.clone();
 
     let job = move || -> Result<()> {
-        let mut resp = client.get(&url).send().context("request failed")?;
+        let resp = agent
+            .get(&url)
+            .header("User-Agent", UA)
+            .call()
+            .context("request failed")?;
         if !resp.status().is_success() {
-            bail!("server returned HTTP {}", resp.status());
+            bail!("server returned HTTP {}", resp.status().as_u16());
         }
-        let mut file = File::create(&dest).with_context(|| format!("cannot create {}", dest.display()))?;
+        let mut file =
+            File::create(&dest).with_context(|| format!("cannot create {}", dest.display()))?;
+        let mut reader = resp.into_body().into_reader();
         let mut buf = [0u8; 64 * 1024];
         loop {
-            let n = resp.read(&mut buf)?;
+            let n = reader.read(&mut buf)?;
             if n == 0 {
                 break;
             }
