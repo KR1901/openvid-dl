@@ -47,7 +47,7 @@ pub fn is_blocked(url: &str, source_url: &str, kind: &str) -> bool {
     };
 
     match Request::new(url, source_url, kind, "") {
-        Ok(request) => engine.check_network_request(&request).matched,
+        Ok(request) => engine.check_network_request(&request).should_block(),
         Err(_) => false,
     }
 }
