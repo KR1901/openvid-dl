@@ -90,13 +90,47 @@ audio always comes along.
 ```bash
 git clone https://github.com/KR1901/openvid-dl
 cd openvid-dl
-./gradlew :app:assembleDebug
-# -> app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug     # -> app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease   # -> app/build/outputs/apk/release/app-release.apk
 ```
 
-Or just open the folder in Android Studio and press Run. The `:app:preBuild`
-task automatically invokes `cargo ndk ... build --release --features android`
-and copies the resulting `.so` files into `app/src/main/jniLibs`.
+The `:app:preBuild` task automatically invokes
+`cargo ndk ... build --release --features android` and copies the resulting
+`.so` files into `app/src/main/jniLibs`, so a plain `./gradlew` call builds the
+native engine too.
+
+### Build without Android Studio (GitHub Actions)
+
+You don't need Android Studio, a local SDK, or Rust installed. The `Build APK`
+workflow (`.github/workflows/build-apk.yml`) builds both APKs in the cloud:
+
+- automatically on every push to `main`, and on tags like `v0.1.0`;
+- manually from **Actions → Build APK → Run workflow**.
+
+Download the result from the run's **Artifacts** section. Pushing a tag (for
+example `git tag v0.1.0 && git push origin v0.1.0`) also creates a GitHub
+Release with both APKs attached, which is the easiest way to share them.
+
+### Release signing
+
+The release build is signed with your key when one is supplied, and falls back
+to the debug key otherwise — so it always produces an installable APK:
+
+- **locally** — copy `keystore.properties.example` to `keystore.properties` and
+  fill it in (it is git-ignored);
+- **in CI** — add repository secrets `KEYSTORE_BASE64` (base64 of your `.jks`),
+  `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`.
+
+Create a keystore with:
+
+```bash
+keytool -genkeypair -v -keystore release.jks -keyalg RSA -keysize 2048 \
+  -validity 10000 -alias openvid
+base64 -w0 release.jks   # paste the output into the KEYSTORE_BASE64 secret
+```
+
+Never commit the keystore: if you publish an app with it, losing it means you
+can no longer ship updates under the same identity.
 
 ### Desktop CLI (same engine)
 

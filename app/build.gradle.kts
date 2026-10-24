@@ -1,10 +1,34 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// ---------------------------------------------------------------------------
+// Optional release signing.
+//
+// Provide the values either locally in keystore.properties (git-ignored) or,
+// in CI, as environment variables. If none are supplied the release build falls
+// back to the debug key, so `assembleRelease` always produces an installable
+// APK — just one that isn't suitable for distribution.
+// ---------------------------------------------------------------------------
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+
+fun signingValue(prop: String, env: String): String? =
+    keystoreProps.getProperty(prop) ?: System.getenv(env)
+
+val releaseStorePath = signingValue("storeFile", "KEYSTORE_FILE")
+val releaseStorePass = signingValue("storePassword", "KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "KEY_ALIAS")
+val releaseKeyPass = signingValue("keyPassword", "KEY_PASSWORD")
+val hasReleaseSigning = releaseStorePath != null && releaseStorePass != null &&
+    releaseKeyAlias != null && releaseKeyPass != null
 
 android {
     namespace = "dev.kr1901.openvid"
@@ -21,13 +45,34 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseStorePath!!)
+                storePassword = releaseStorePass
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPass
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

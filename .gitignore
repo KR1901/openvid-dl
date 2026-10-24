@@ -18,6 +18,11 @@ captures/
 *.ap_
 *.dex
 
+# Signing — never commit these
+keystore.properties
+*.jks
+*.keystore
+
 # IDE / OS
 .idea/
 *.iml
