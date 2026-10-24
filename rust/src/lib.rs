@@ -7,6 +7,7 @@
 //! All I/O is blocking and thread-based, which keeps the JNI boundary simple:
 //! every native call runs to completion on the calling (JVM) thread.
 
+pub mod blocker;
 pub mod downloader;
 pub mod extractor;
 pub mod hls;

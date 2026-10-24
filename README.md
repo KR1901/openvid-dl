@@ -15,6 +15,12 @@ page in the built-in browser, and download any — or every — video on it.
   its own page, history and list of detected videos. The address bar sits at the
   bottom where your thumb is, the tab switcher is one tap away, and the bar lifts
   above the keyboard while you type.
+- **Ad and tracker blocking.** Every sub-resource request is filtered through
+  Brave's `adblock` engine (the one in the Brave browser) against a bundled
+  AdGuard rule list, so pages load cleaner and faster. The page itself is never
+  blocked, only its sub-resources.
+- **Download interception.** When a page triggers a download itself, openvid-dl
+  notices, surfaces it and opens the media sheet rather than silently ignoring it.
 - **Useful browser controls.** A menu with a desktop-site toggle (helpful on
   sites that hide video from mobile), reload, copy link, share, open in new tab
   and close tab.
@@ -66,6 +72,11 @@ HTTP is handled by `ureq` — a pure blocking client with no async runtime, usin
 bundled webpki roots. This is deliberate: reqwest 0.13's `rustls` feature
 hard-wires `rustls-platform-verifier`, which needs a JVM `Context` on Android and
 panics without one (surfacing as "event loop thread panicked").
+
+Ad/tracker filtering uses Brave's `adblock` crate with the rule list in
+`app/src/main/assets/filters.txt` (AdGuard's ad-server and tracking-server
+sections, Adblock Plus syntax). The engine is built once on a background thread
+at startup; until it is ready nothing is blocked.
 
 ## Layout
 

@@ -17,8 +17,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.kr1901.openvid.engine.NativeEngine
 import org.json.JSONArray
 import org.json.JSONTokener
+import java.io.ByteArrayInputStream
 import java.net.URLEncoder
 
 const val HOME_URL = "https://www.google.com"
@@ -83,6 +85,34 @@ class BrowserController(private val context: Context) {
     /** When true, pages are requested with a desktop user agent. */
     var desktopMode by mutableStateOf(false)
         private set
+
+    /** Set when the page itself triggers a download, so the UI can surface it. */
+    var interceptNotice by mutableStateOf<String?>(null)
+        private set
+
+    fun consumeInterceptNotice(): String? {
+        val notice = interceptNotice
+        interceptNotice = null
+        return notice
+    }
+
+    /** Map a WebView request onto the resource types the filter engine knows. */
+    private fun requestKind(request: WebResourceRequest): String {
+        if (request.isForMainFrame) return "document"
+        val url = request.url.toString().lowercase()
+        val path = url.substringBefore('?')
+        return when {
+            path.endsWith(".js") -> "script"
+            path.endsWith(".css") -> "stylesheet"
+            path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+                path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".svg") ||
+                path.endsWith(".ico") -> "image"
+            path.endsWith(".woff") || path.endsWith(".woff2") || path.endsWith(".ttf") ||
+                path.endsWith(".otf") -> "font"
+            looksLikeMedia(url) -> "media"
+            else -> "xmlhttprequest"
+        }
+    }
 
     private var nextId = 1
 
@@ -219,6 +249,16 @@ class BrowserController(private val context: Context) {
                 request: WebResourceRequest,
             ): WebResourceResponse? {
                 val url = request.url.toString()
+                // Never block the page itself, only its sub-resources.
+                if (!request.isForMainFrame &&
+                    NativeEngine.isBlocked(url, tab.url, requestKind(request))
+                ) {
+                    return WebResourceResponse(
+                        "text/plain",
+                        "utf-8",
+                        ByteArrayInputStream(ByteArray(0)),
+                    )
+                }
                 if (looksLikeMedia(url)) addDetected(tab, url)
                 return super.shouldInterceptRequest(view, request)
             }
@@ -256,7 +296,10 @@ class BrowserController(private val context: Context) {
         }
 
         view.setDownloadListener { url, _, _, _, _ ->
-            if (url != null) addDetected(tab, url)
+            if (url != null) {
+                addDetected(tab, url)
+                interceptNotice = url
+            }
         }
 
         view.loadUrl(tab.url)

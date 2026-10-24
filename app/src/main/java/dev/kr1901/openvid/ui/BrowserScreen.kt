@@ -188,6 +188,16 @@ fun BrowserScreen(
         }
     }
 
+    // Surface downloads the page itself triggers.
+    LaunchedEffect(controller.interceptNotice) {
+        if (controller.interceptNotice == null) return@LaunchedEffect
+        controller.consumeInterceptNotice()
+        selected = null
+        picked.clear()
+        showSheet = true
+        onMessage("Download link detected")
+    }
+
     Column(modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             AndroidView(

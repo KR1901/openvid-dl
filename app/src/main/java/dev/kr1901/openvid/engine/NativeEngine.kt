@@ -3,7 +3,8 @@ package dev.kr1901.openvid.engine
 /**
  * JNI bridge to the Rust engine (`libopenvid_core.so`).
  *
- * Both methods are synchronous and must not be called on the main thread.
+ * All methods are synchronous and must not be called on the main thread, except
+ * [isBlocked] which is a fast in-memory lookup.
  */
 object NativeEngine {
     init {
@@ -28,6 +29,19 @@ object NativeEngine {
         totalHint: Long,
         callback: ProgressCallback,
     ): Boolean
+
+    /**
+     * Installs the ad/tracker filter rules (Adblock Plus syntax). Safe to call
+     * again to replace the rule set.
+     */
+    external fun initBlocker(rules: String): Boolean
+
+    /**
+     * Whether a request for [url] made from [sourceUrl] should be blocked.
+     * [kind] is one of: document, script, image, stylesheet, font, media,
+     * xmlhttprequest.
+     */
+    external fun isBlocked(url: String, sourceUrl: String, kind: String): Boolean
 }
 
 /** Progress callback invoked from the native download loop. */

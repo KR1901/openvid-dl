@@ -104,3 +104,48 @@ fn run_download(req: &DownloadRequest, callback: &Global<JObject<'static>>) -> b
 
     crate::downloader::download(&client, req, &progress).is_ok()
 }
+
+/// Install the ad/tracker filter rules (Adblock Plus syntax). Safe to call
+/// again to replace the rule set. Returns `true` if the engine was installed.
+#[no_mangle]
+pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_initBlocker<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    rules: JString<'local>,
+) -> jboolean {
+    unowned_env
+        .with_env(|_env| -> jni::errors::Result<_> {
+            let text: String = rules.to_string();
+            Ok(if crate::blocker::init(&text) {
+                JNI_TRUE
+            } else {
+                JNI_FALSE
+            })
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+/// Should the WebView block a request for `url` made from `source_url`?
+/// `kind` is a resource type: document, script, image, stylesheet, font, media
+/// or xmlhttprequest.
+#[no_mangle]
+pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_isBlocked<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _this: JObject<'local>,
+    url: JString<'local>,
+    source_url: JString<'local>,
+    kind: JString<'local>,
+) -> jboolean {
+    unowned_env
+        .with_env(|_env| -> jni::errors::Result<_> {
+            let url: String = url.to_string();
+            let source: String = source_url.to_string();
+            let kind: String = kind.to_string();
+            Ok(if crate::blocker::is_blocked(&url, &source, &kind) {
+                JNI_TRUE
+            } else {
+                JNI_FALSE
+            })
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}

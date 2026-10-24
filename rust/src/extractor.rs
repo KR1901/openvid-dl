@@ -1,8 +1,10 @@
 //! Format discovery.
 //!
 //! Best-effort and native: it recognises direct media links, the common HTML5
-//! `<video>`/`<source>`/OpenGraph patterns, and HLS (`.m3u8`) playlists. It does
-//! not attempt the per-site reverse engineering that `yt-dlp` does.
+//! `<video>`/`<source>`/OpenGraph patterns, HLS (`.m3u8`) playlists, and media
+//! URLs embedded in inline JavaScript/JSON (which is how most JS-driven players
+//! expose their stream). It does not attempt the per-site reverse engineering
+//! that `yt-dlp` does.
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -17,6 +19,13 @@ use crate::util::{guess_ext, title_from_url};
 
 pub const UA: &str = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 \
 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+
+/// Extensions we are willing to treat as downloadable media. Anything else
+/// found on a page is ignored, which keeps the broad patterns below safe.
+const MEDIA_EXTS: [&str; 16] = [
+    "mp4", "webm", "mkv", "m4v", "mov", "flv", "ts", "m4s", "mpd", "3gp", "mp3", "m4a", "aac",
+    "ogg", "opus", "wav",
+];
 
 /// HTTP agent used for both discovery and downloading.
 ///
@@ -94,12 +103,13 @@ pub fn extract(agent: &Agent, input: &str) -> Result<MediaInfo> {
     let body = String::from_utf8_lossy(&buf);
 
     let mut formats = scrape(&body, &url);
-    formats.truncate(80);
+    formats.truncate(120);
     if formats.is_empty() {
         bail!(
             "no downloadable media was found on this page. The native extractor \
-             handles direct media links, common HTML5 video and HLS playlists — \
-             it is not a full yt-dlp replacement."
+             handles direct media links, common HTML5 video, HLS playlists and \
+             media URLs embedded in page scripts — it is not a full yt-dlp \
+             replacement."
         );
     }
 
@@ -112,11 +122,7 @@ fn direct_format(agent: &Agent, url: &Url) -> Option<Format> {
     if path.ends_with(".m3u8") {
         return Some(hls_format(url));
     }
-    const EXTS: [&str; 16] = [
-        "mp4", "webm", "mkv", "m4v", "mov", "flv", "ts", "m4s", "mpd", "3gp", "mp3", "m4a", "aac",
-        "ogg", "opus", "wav",
-    ];
-    for ext in EXTS {
+    for ext in MEDIA_EXTS {
         if path.ends_with(&format!(".{ext}")) {
             let kind = if is_audio_ext(ext) { "audio" } else { "video" };
             return Some(Format {
@@ -150,16 +156,37 @@ fn head_size(agent: &Agent, url: &Url) -> Option<u64> {
         })
 }
 
+/// Undo the escaping that JSON-in-HTML uses, so that URLs embedded in scripts
+/// become matchable. This is the single biggest reason JS-driven players (VK,
+/// and many others) were previously invisible to us.
+fn unescape(html: &str) -> String {
+    html.replace("\\/", "/")
+        .replace("\\u0026", "&")
+        .replace("\\u002F", "/")
+        .replace("\\u002f", "/")
+        .replace("\\u003D", "=")
+        .replace("\\u003d", "=")
+        .replace("&amp;", "&")
+}
+
 fn scrape(html: &str, base: &Url) -> Vec<Format> {
+    let decoded = unescape(html);
+
     let patterns = [
+        // OpenGraph / Twitter player
         r#"(?i)<meta[^>]+property=["']og:video(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']"#,
         r#"(?i)<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:video(?::secure_url|:url)?["']"#,
         r#"(?i)<meta[^>]+name=["']twitter:player:stream["'][^>]+content=["']([^"']+)["']"#,
+        // HTML5 media elements
         r#"(?i)<video[^>]+src=["']([^"']+)["']"#,
-        r#"(?i)<source[^>]+src=["']([^"']+)["']"#,
         r#"(?i)<video[^>]+data-src=["']([^"']+)["']"#,
+        r#"(?i)<source[^>]+src=["']([^"']+)["']"#,
+        // Any quoted URL that ends in a media file
+        r#"(?i)["'](https?://[^"']+?\.(?:mp4|webm|mkv|m4v|mov|flv|ts|m4s|mpd|mp3|m4a|aac|ogg|opus)(?:\?[^"']*)?)["']"#,
         r#"(?i)["'](https?://[^"']+?\.m3u8[^"']*)["']"#,
-        r#"(?i)["'](https?://[^"']+?\.(?:mp4|webm|mkv|m4v|mov|mp3|m4a|ts|m4s)(?:\?[^"']*)?)["']"#,
+        // Media URLs inside inline JSON / JavaScript
+        r#"(?i)"(?:url|src|file|hls|dash|mp4|video_url|play_url|videoUrl|playUrl)"\s*:\s*"([^"]+)""#,
+        // Relative media links
         r#"(?i)["']([^"']+?\.m3u8[^"']*)["']"#,
     ];
 
@@ -167,7 +194,7 @@ fn scrape(html: &str, base: &Url) -> Vec<Format> {
     let mut raw: Vec<String> = Vec::new();
     for p in patterns {
         if let Ok(re) = Regex::new(p) {
-            for cap in re.captures_iter(html) {
+            for cap in re.captures_iter(&decoded) {
                 if let Some(m) = cap.get(1) {
                     let s = m.as_str().to_string();
                     if seen.insert(s.clone()) {
@@ -180,7 +207,7 @@ fn scrape(html: &str, base: &Url) -> Vec<Format> {
 
     let mut formats = Vec::new();
     for r in raw {
-        if r.starts_with("data:") {
+        if r.starts_with("data:") || r.starts_with("blob:") {
             continue;
         }
         let resolved = match base.join(&r) {
@@ -189,34 +216,37 @@ fn scrape(html: &str, base: &Url) -> Vec<Format> {
         };
         let u = resolved.to_string();
         let id = formats.len().to_string();
+
         if u.contains(".m3u8") {
             let mut f = hls_format(&resolved);
             f.id = id;
             formats.push(f);
-        } else {
-            let ext = resolved
-                .path()
-                .rsplit('.')
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if ext.is_empty() || ext.len() > 5 {
-                continue;
-            }
-            let kind = if is_audio_ext(&ext) { "audio" } else { "video" };
-            formats.push(Format {
-                id,
-                url: u,
-                ext,
-                protocol: "direct".into(),
-                kind: kind.into(),
-                height: None,
-                width: None,
-                bitrate: None,
-                filesize: None,
-                note: "from page".into(),
-            });
+            continue;
         }
+
+        let ext = resolved
+            .path()
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        // Only keep real media extensions; everything else is page noise.
+        if !MEDIA_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        let kind = if is_audio_ext(&ext) { "audio" } else { "video" };
+        formats.push(Format {
+            id,
+            url: u,
+            ext,
+            protocol: "direct".into(),
+            kind: kind.into(),
+            height: None,
+            width: None,
+            bitrate: None,
+            filesize: None,
+            note: "from page".into(),
+        });
     }
     formats
 }

@@ -3,7 +3,9 @@ package dev.kr1901.openvid
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.util.Log
 import dev.kr1901.openvid.data.AppSettings
+import dev.kr1901.openvid.engine.NativeEngine
 
 class OpenVidApp : Application() {
     override fun onCreate() {
@@ -18,9 +20,27 @@ class OpenVidApp : Application() {
             description = getString(R.string.download_channel_desc)
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+
+        loadFilters()
+    }
+
+    /**
+     * Parsing the filter list takes a moment, so it happens off the main thread
+     * at startup; until it finishes the interceptor simply blocks nothing.
+     */
+    private fun loadFilters() {
+        Thread {
+            runCatching {
+                val rules = assets.open(FILTERS_ASSET).bufferedReader().use { it.readText() }
+                val ok = NativeEngine.initBlocker(rules)
+                Log.i(TAG, "adblock engine ready: $ok")
+            }.onFailure { Log.w(TAG, "could not load filters", it) }
+        }.apply { isDaemon = true }.start()
     }
 
     companion object {
         const val CHANNEL_ID = "downloads"
+        private const val TAG = "openvid-dl"
+        private const val FILTERS_ASSET = "filters.txt"
     }
 }
