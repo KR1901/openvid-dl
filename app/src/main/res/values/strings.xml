@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">openvid-dl</string>
+    <string name="download_channel_name">Downloads</string>
+    <string name="download_channel_desc">Shows progress for active downloads</string>
+</resources>

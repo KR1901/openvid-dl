@@ -1,13 +1,25 @@
-# Rust build artifacts
-/target
+# Rust
+/rust/target
 **/*.rs.bk
 
-# Local downloads / scratch
-/downloads
-*.part
-*.tmp
+# Generated native libs (built from rust/ by cargo-ndk)
+/app/src/main/jniLibs/
 
-# Editor / OS noise
-.DS_Store
+# Android / Gradle
+.gradle/
+/app/build/
+/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# IDE / OS
 .idea/
+*.iml
 .vscode/
+.DS_Store

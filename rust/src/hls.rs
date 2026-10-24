@@ -1,0 +1,133 @@
+//! HLS (`.m3u8`) support: pick the highest-bandwidth variant of a master
+//! playlist, download the media segments in parallel, and concatenate them.
+//!
+//! Output is MPEG-TS. Turning that into an MP4 would require a muxer, which is
+//! deliberately out of scope for the native engine (see the roadmap).
+
+use anyhow::{bail, Context, Result};
+use reqwest::blocking::Client;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use url::Url;
+
+pub fn download(
+    client: &Client,
+    url: &str,
+    dest: &Path,
+    connections: usize,
+    progress: &dyn Fn(u64, u64),
+) -> Result<()> {
+    let base = Url::parse(url).context("invalid HLS URL")?;
+    let text = client
+        .get(url)
+        .send()
+        .context("failed to fetch the HLS playlist")?
+        .text()
+        .context("failed to read the playlist")?;
+
+    let (media_url, media_text) = if text.contains("#EXT-X-STREAM-INF") {
+        let variant = pick_variant(&text, &base)?;
+        let t = client
+            .get(variant.clone())
+            .send()
+            .context("failed to fetch the HLS variant playlist")?
+            .text()?;
+        (variant, t)
+    } else {
+        (base.clone(), text)
+    };
+
+    let segments = parse_segments(&media_text, &media_url);
+    if segments.is_empty() {
+        bail!("the HLS playlist contains no segments");
+    }
+
+    let parts = dest.with_extension("hls-parts");
+    std::fs::create_dir_all(&parts).ok();
+
+    let done = Arc::new(AtomicU64::new(0));
+    let jobs: Vec<_> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let client = client.clone();
+            let seg = seg.clone();
+            let path = parts.join(format!("{i:06}.ts"));
+            let done = done.clone();
+            move || -> Result<()> {
+                let mut resp = client
+                    .get(&seg)
+                    .send()
+                    .with_context(|| format!("segment {i} failed"))?;
+                if !resp.status().is_success() {
+                    bail!("segment {i} returned HTTP {}", resp.status());
+                }
+                let mut file = File::create(&path)?;
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let n = resp.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    file.write_all(&buf[..n])?;
+                    done.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+        })
+        .collect();
+
+    let _ = connections;
+    crate::downloader::run_parallel(jobs, done, 0, progress)?;
+
+    let mut out = File::create(dest).with_context(|| format!("cannot create {}", dest.display()))?;
+    for i in 0..segments.len() {
+        let p = parts.join(format!("{i:06}.ts"));
+        let mut f = File::open(&p).with_context(|| format!("missing segment file {}", p.display()))?;
+        std::io::copy(&mut f, &mut out)?;
+    }
+    std::fs::remove_dir_all(&parts).ok();
+    Ok(())
+}
+
+fn pick_variant(text: &str, base: &Url) -> Result<Url> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut best: Option<(u64, String)> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
+            let bw = rest
+                .split(',')
+                .find_map(|p| p.trim().strip_prefix("BANDWIDTH=").and_then(|v| v.trim().parse::<u64>().ok()))
+                .unwrap_or(0);
+            if let Some(next) = lines.get(i + 1) {
+                let next = next.trim();
+                if !next.is_empty() && !next.starts_with('#') {
+                    if let Ok(u) = base.join(next) {
+                        if best.as_ref().map_or(true, |(b, _)| bw > *b) {
+                            best = Some((bw, u.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let (_, u) = best.context("no playable variant was found in the master playlist")?;
+    Url::parse(&u).context("invalid variant URL")
+}
+
+fn parse_segments(text: &str, base: &Url) -> Vec<String> {
+    text.lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with('#')
+        })
+        .filter_map(|l| base.join(l.trim()).ok())
+        .filter(|u| u.scheme() == "http" || u.scheme() == "https")
+        .map(|u| u.to_string())
+        .collect()
+}

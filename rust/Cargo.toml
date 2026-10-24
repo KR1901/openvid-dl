@@ -1,0 +1,37 @@
+[package]
+name = "openvid-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Native download engine for openvid-dl (Android + desktop CLI)."
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "openvid_core"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "openvid-dl"
+path = "src/bin/cli.rs"
+required-features = ["cli"]
+
+[features]
+default = []
+android = ["dep:jni"]
+cli = ["dep:clap", "dep:indicatif"]
+
+[dependencies]
+anyhow = "1"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+jni = { version = "0.21", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+indicatif = { version = "0.17", optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

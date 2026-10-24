@@ -1,134 +1,140 @@
 # openvid-dl
 
-**A fast, universal video downloader — any site, any quality, with audio.**
+**A fast, universal video downloader for Android — any site, any quality, with audio.**
 
-`openvid-dl` grabs video from the sites you already use, lets you pick exactly
-the quality you want, and always keeps the audio. It is a single native binary
-written in Rust, designed to make the download step as fast as your connection
-allows.
+`openvid-dl` is a native Android app (Kotlin + Jetpack Compose) powered by a
+Rust download engine bridged over JNI. Paste or share a link, or browse to a
+video in the built-in browser, pick the quality you want, and download it — the
+audio always comes along.
 
-> **Status:** early MVP (v0.1). Works end to end; the CLI surface may still
-> change.
+> **Status: early MVP (v0.1), pre-build.** The project is complete as source but
+> has **not** been compiled in this environment (no JDK/Android SDK/NDK/Rust
+> toolchain available where it was written). Treat the first Android Studio
+> build as the real verification. See [Build](#build) and [Limitations](#limitations).
 
-## Why another downloader?
+## What it does
 
-Most downloaders read a single HTTP stream start to finish. `openvid-dl` splits
-the transfer into parallel byte-range requests and reassembles the file, which
-typically saturates a fast link far better — and it does the same for the
-separate video and audio streams that modern streaming sites serve, remuxing
-them losslessly at the end.
+- **Paste or share** — type a URL, paste from the clipboard, or share a link to
+  openvid-dl from any other app (the share-sheet intent is registered).
+- **Built-in browser** — a WebView that watches network traffic for media URLs
+  (`.m3u8`, `.mp4`, `.webm`, `.m4a`, `.mp3`) and lets you tap a detected stream
+  to fetch its formats.
+- **Pick any quality** — every stream the engine finds is listed with its
+  resolution/format; choose one and download.
+- **Fast downloads** — the Rust engine probes each server for HTTP range support
+  and, when available, pulls the file with several parallel connections.
+- **Audio included** — audio-only streams are selectable; HLS playlists are
+  handled by downloading and concatenating their segments.
+- **Foreground service** — downloads continue while you use the app, with
+  progress in the notification shade, and land in `Downloads/openvid-dl`.
 
-- **Any site** — discovery is delegated to [`yt-dlp`](https://github.com/yt-dlp/yt-dlp),
-  which tracks thousands of sites, so you get that coverage for free.
-- **Any quality** — `--list-formats` shows every stream; pick one by id, or let
-  `best` choose the highest resolution.
-- **Always with audio** — when the top quality is served as separate video and
-  audio streams, both are downloaded and muxed back together with `ffmpeg`.
-- **Fast** — concurrent, segmented downloads with live progress.
-- **Small** — a native Rust binary, no runtime to install.
+## Architecture
 
-## Requirements
+```
+┌────────────────────────────── Android app (Kotlin + Compose) ──────────────────────────────┐
+│  MainActivity ──▶ AppRoot ──▶ HomeScreen / BrowserScreen / DownloadsScreen                  │
+│        │                          │                                                          │
+│        │                     MainViewModel ──▶ NativeEngine (JNI)                            │
+│        │                          │                    │                                     │
+│   share intent                DownloadService ◀────────┘                                     │
+│  (ACTION_SEND)                (foreground, notification, MediaStore)                         │
+└──────────────────────────────────────────┬──────────────────────────────────────────────────┘
+                                            │  JNI
+┌───────────────────────────────────────────▼──────────────────────────────────────────────────┐
+│  Rust engine  (rust/, crate openvid-core → libopenvid_core.so)                                │
+│    extractor.rs  best-effort discovery (direct links, HTML5 <video>, OpenGraph, HLS)          │
+│    downloader.rs threaded, range-based parallel HTTP downloader                              │
+│    hls.rs        master-playlist variant selection + segment download/concat                 │
+│    android.rs    JNI exports (extractFormats, download)                                       │
+└───────────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-`openvid-dl` shells out to two well-known tools for the jobs they do best:
+## Layout
 
-| Tool | Why it is needed | Install |
-| --- | --- | --- |
-| [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) | discovers formats for a URL | `pipx install yt-dlp` |
-| [`ffmpeg`](https://ffmpeg.org) | muxes separate video + audio streams | `apt install ffmpeg` / `brew install ffmpeg` |
+```
+.
+├── app/                       Android application module (Kotlin + Compose)
+│   └── src/main/
+│       ├── java/dev/kr1901/openvid/
+│       │   ├── MainActivity.kt        share/view intents, notification permission
+│       │   ├── engine/                JNI bridge + format models
+│       │   ├── data/                  download list, foreground service
+│       │   ├── ui/                    Compose screens + theme + ViewModel
+│       │   └── util/                  MediaStore publishing
+│       ├── res/                       strings, theme, launcher icon
+│       └── AndroidManifest.xml
+├── rust/                      Native engine (Rust)
+│   └── src/{lib,extractor,downloader,hls,android,model,util}.rs  + bin/cli.rs
+├── build.gradle.kts           root Gradle config (AGP 8.10.1, Kotlin 2.1.20)
+├── settings.gradle.kts
+└── gradle/                    Gradle wrapper
+```
 
-Both must be on your `PATH`, or point at them with `--ytdlp` / `--ffmpeg`.
+## Build
 
-## Install
+### Prerequisites
 
-From source (requires a Rust toolchain, 1.74+):
+- **Android Studio** (Ladybug or newer) with the **Android SDK** and **NDK**.
+- **Rust** (via [rustup](https://rustup.rs)) with the Android targets:
+  ```bash
+  rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+  ```
+- **cargo-ndk**:
+  ```bash
+  cargo install cargo-ndk
+  export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/<version>"
+  ```
+
+### Build the APK
 
 ```bash
 git clone https://github.com/KR1901/openvid-dl
 cd openvid-dl
-cargo install --path .
+./gradlew :app:assembleDebug
+# -> app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or build a release binary:
+Or just open the folder in Android Studio and press Run. The `:app:preBuild`
+task automatically invokes `cargo ndk ... build --release --features android`
+and copies the resulting `.so` files into `app/src/main/jniLibs`.
+
+### Desktop CLI (same engine)
+
+The Rust engine also builds as a small CLI, useful for testing extraction and
+downloads without a device:
 
 ```bash
-cargo build --release
-# target/release/openvid-dl
+cd rust
+cargo run --features cli --bin openvid-dl -- --list-formats "https://example.com/video"
+cargo run --features cli --bin openvid-dl -- -q best "https://example.com/video"
 ```
 
-## Usage
+## Limitations
 
-```bash
-# Best available quality, with audio, saved as the video title
-openvid-dl "https://example.com/watch?v=..."
+Being honest about the MVP:
 
-# See every available format and its size
-openvid-dl --list-formats "https://example.com/watch?v=..."
-
-# A specific format id (audio is added automatically if the format has none)
-openvid-dl -q 137 "https://example.com/watch?v=..."
-
-# Audio only
-openvid-dl -q audio "https://example.com/watch?v=..."
-
-# Choose the output name and crank up the parallel connections
-openvid-dl -o my-clip -n 16 "https://example.com/watch?v=..."
-```
-
-### Options
-
-| Flag | Default | Description |
-| --- | --- | --- |
-| `-o, --output <PATH>` | video title | Output file path or base name |
-| `-q, --quality <SEL>` | `best` | `best`, `audio`, or a format id |
-| `--list-formats` | — | List all formats and exit |
-| `-n, --connections <N>` | `8` | Parallel connections per file |
-| `--ytdlp <PATH>` | `yt-dlp` | Path to the extractor binary |
-| `--ffmpeg <PATH>` | `ffmpeg` | Path to the ffmpeg binary |
-
-## How it works
-
-```
-URL ──▶ yt-dlp -J ──▶ MediaInfo { formats: [...] }
-                              │
-                 select quality (best / audio / id)
-                              │
-        ┌─────────────────────┴─────────────────────┐
-        ▼                                            ▼
-  video stream                                 audio stream
-  (parallel byte-range download)               (parallel byte-range download)
-        └─────────────────────┬─────────────────────┘
-                              ▼
-                       ffmpeg -c copy ──▶ single file
-```
-
-1. **Extract** — `yt-dlp -J` returns the page metadata as JSON; we parse the
-   `formats` array.
-2. **Select** — the requested quality is resolved to a concrete video and/or
-   audio stream.
-3. **Download** — each stream is probed for size and range support, then pulled
-   concurrently and written directly to its offsets in the output file. Servers
-   without range support fall back to a single stream.
-4. **Mux** — if video and audio arrived separately, `ffmpeg -c copy` remuxes
-   them without re-encoding.
+- **Native extraction is deliberately narrow.** Unlike `yt-dlp`, which tracks
+  thousands of sites with per-site logic, the Rust engine only understands
+  direct media links, common HTML5 `<video>`/`<source>`/OpenGraph tags, and HLS
+  playlists. Sites that serve media through proprietary players, DRM, or signed
+  APIs will not work. Broadening coverage means adding extractors (see roadmap).
+- **HLS output is MPEG-TS**, not MP4 — remuxing would require a muxer, which is
+  not bundled.
+- **DRM-protected content is out of scope** and always will be.
+- **Not compiled yet.** See the status note at the top.
 
 ## Roadmap
 
-- Native extractors for a handful of popular sites (drop the `yt-dlp` runtime
-  dependency for the common cases).
-- Cookie / header passthrough for gated content.
-- Resume of interrupted downloads.
-- Subtitles and thumbnail embedding.
+- Per-site extractors (start with the most requested sites).
+- Bundle a muxer so HLS and separate video/audio streams become MP4.
+- Download queue with pause/resume and persistence.
+- Subtitle and thumbnail embedding.
 
 ## Legal
 
 `openvid-dl` is a general-purpose tool. Downloading a video does not grant you
-any rights to it — respect each site's terms of service and the copyright of
-the content you download. You are responsible for how you use this software.
-
-## Contributing
-
-Issues and pull requests are welcome. Please run `cargo fmt` and `cargo clippy`
-before opening a PR.
+any rights to it — respect each site's terms of service and the copyright of the
+content you download. You are responsible for how you use this software.
 
 ## License
 
