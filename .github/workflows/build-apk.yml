@@ -3,7 +3,7 @@ name: Build APK
 # Builds the Android app in the cloud so you don't need Android Studio.
 # Produces both a debug and a release APK.
 #
-#   * runs on every push to main, on tags like v0.1.0, and manually
+#   * runs on every push to main, on tags like v0.3.0, and manually
 #   * attaches the APKs to a GitHub Release when a tag is pushed
 #
 # Release signing (optional): add these repository secrets and the release
@@ -111,11 +111,20 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
+      # Give the release assets descriptive, versioned names instead of the
+      # generic app-release.apk / app-debug.apk.
+      - name: Stage release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -e
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk "dist/openvid-dl-${GITHUB_REF_NAME}-release.apk"
+          cp app/build/outputs/apk/debug/*.apk "dist/openvid-dl-${GITHUB_REF_NAME}-debug.apk"
+          ls -l dist
+
       - name: Attach APKs to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/apk/debug/*.apk
+          files: dist/*.apk
           generate_release_notes: true

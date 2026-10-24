@@ -23,8 +23,7 @@ import java.net.URLEncoder
  * Owns the WebView and the browsing session.
  *
  * Hoisting this out of the composable means the page, cookies, history and the
- * list of detected media all survive switching between the Home / Browser /
- * Downloads tabs — the browser no longer reloads every time you come back to it.
+ * list of videos found on the current page all survive switching between tabs.
  */
 class BrowserController(private val context: Context) {
 
@@ -41,6 +40,7 @@ class BrowserController(private val context: Context) {
     var canGoBack by mutableStateOf(false)
         private set
 
+    /** Every downloadable stream found on the current page. */
     val detected = mutableStateListOf<String>()
 
     var webView: WebView? = null
@@ -53,6 +53,8 @@ class BrowserController(private val context: Context) {
         if (url.isBlank() || url.startsWith("blob:") || url.startsWith("data:")) return
         if (detected.none { it == url }) detected.add(url)
     }
+
+    fun clearDetected() = detected.clear()
 
     /** Navigate to [target], which may be a URL, a bare domain, or a search term. */
     fun go(target: String) {
@@ -82,7 +84,7 @@ class BrowserController(private val context: Context) {
         }
     }
 
-    /** Ask the page for any media elements it exposes. */
+    /** Ask the page for every media element it exposes. */
     fun probe() {
         webView?.evaluateJavascript(PROBE_JS) { raw -> applyProbeResult(raw) }
     }
@@ -136,6 +138,8 @@ class BrowserController(private val context: Context) {
                 address = url
                 currentUrl = url
                 secure = url.startsWith("https")
+                // A fresh page starts with a fresh list of videos.
+                clearDetected()
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -174,10 +178,14 @@ class BrowserController(private val context: Context) {
         private const val PROBE_JS = """
             (function () {
               var out = [];
-              function push(u) { if (u && out.indexOf(u) < 0) out.push(u); }
+              function push(u) { if (u && u.indexOf('blob:') !== 0 && out.indexOf(u) < 0) out.push(u); }
               document.querySelectorAll('video,audio,source').forEach(function (e) {
                 if (e.src) push(e.src);
                 if (e.currentSrc) push(e.currentSrc);
+                if (e.getAttribute) {
+                  var d = e.getAttribute('data-src');
+                  if (d) push(d);
+                }
               });
               document.querySelectorAll('a[href]').forEach(function (a) {
                 if (/\.(mp4|m3u8|webm|mkv|mov|m4a|mp3)(\?|#|${'$'})/i.test(a.href)) push(a.href);

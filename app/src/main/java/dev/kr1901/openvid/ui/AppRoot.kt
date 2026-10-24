@@ -1,10 +1,12 @@
 package dev.kr1901.openvid.ui
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -14,8 +16,10 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,13 +29,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.kr1901.openvid.data.AppSettings
+import dev.kr1901.openvid.data.ThemeMode
 import kotlinx.coroutines.launch
 
-private enum class Tab { HOME, BROWSER, DOWNLOADS }
+private enum class Tab { HOME, BROWSER, DOWNLOADS, SETTINGS }
+
+@Composable
+fun AppRoot(sharedUrl: String?) {
+    val themeMode by AppSettings.themeMode.collectAsState()
+    val dark = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+    OpenVidTheme(darkTheme = dark) {
+        AppScaffold(sharedUrl = sharedUrl)
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppRoot(sharedUrl: String?) {
+private fun AppScaffold(sharedUrl: String?) {
     val vm: MainViewModel = viewModel()
     val context = LocalContext.current
     // Remembered here so the browsing session survives tab switches.
@@ -52,12 +71,27 @@ fun AppRoot(sharedUrl: String?) {
     }
 
     Scaffold(
+        containerColor = androidx.compose.material3.MaterialTheme.colorScheme.background,
         topBar = {
             when (tab) {
                 Tab.HOME -> TopAppBar(
-                    title = { Text("openvid-dl", fontWeight = FontWeight.SemiBold) },
+                    title = { Text("openvid-dl", fontWeight = FontWeight.Medium) },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = androidx.compose.material3.MaterialTheme.colorScheme.background,
+                    ),
                 )
-                Tab.DOWNLOADS -> TopAppBar(title = { Text("Downloads") })
+                Tab.DOWNLOADS -> TopAppBar(
+                    title = { Text("Downloads") },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = androidx.compose.material3.MaterialTheme.colorScheme.background,
+                    ),
+                )
+                Tab.SETTINGS -> TopAppBar(
+                    title = { Text("Settings") },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = androidx.compose.material3.MaterialTheme.colorScheme.background,
+                    ),
+                )
                 Tab.BROWSER -> Unit
             }
         },
@@ -82,6 +116,12 @@ fun AppRoot(sharedUrl: String?) {
                     icon = { Icon(Icons.Filled.Download, contentDescription = "Downloads") },
                     label = { Text("Downloads") },
                 )
+                NavigationBarItem(
+                    selected = tab == Tab.SETTINGS,
+                    onClick = { tab = Tab.SETTINGS },
+                    icon = { Icon(Icons.Filled.Settings, contentDescription = "Settings") },
+                    label = { Text("Settings") },
+                )
             }
         },
     ) { padding ->
@@ -90,6 +130,7 @@ fun AppRoot(sharedUrl: String?) {
             Tab.HOME -> HomeScreen(vm, showMessage, modifier)
             Tab.BROWSER -> BrowserScreen(browser, showMessage, modifier)
             Tab.DOWNLOADS -> DownloadsScreen(modifier)
+            Tab.SETTINGS -> SettingsScreen(modifier)
         }
     }
 }

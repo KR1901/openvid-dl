@@ -22,95 +22,134 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Runs one download in a foreground service so it survives the UI and shows
- * progress in the notification shade.
+ * Runs downloads in a foreground service with a simple FIFO queue, so selecting
+ * several videos on a page queues them all. One summary notification reports
+ * overall progress; per-item progress lives in the Downloads tab.
  */
 class DownloadService : Service() {
 
+    private data class Job(
+        val url: String,
+        val title: String,
+        val fileName: String,
+        val mime: String,
+        val totalHint: Long,
+    )
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val queue = ArrayDeque<Job>()
+    private val lock = Any()
+    private var draining = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val url = intent?.getStringExtra(EXTRA_URL)
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "video"
-        val fileName = intent?.getStringExtra(EXTRA_FILE_NAME) ?: "video.mp4"
-        val mime = intent?.getStringExtra(EXTRA_MIME) ?: "video/mp4"
-        val totalHint = intent?.getLongExtra(EXTRA_TOTAL, 0L) ?: 0L
-
-        if (url.isNullOrBlank()) {
+        val job = parseJob(intent)
+        if (job == null) {
             stopSelf()
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIF_ID, buildNotification(title, 0, 0, indeterminate = true))
-        scope.launch { runDownload(url, title, fileName, mime, totalHint) }
+        synchronized(lock) { queue.addLast(job) }
+        startForeground(NOTIF_ID, buildNotification())
+        startDraining()
         return START_NOT_STICKY
     }
 
-    private suspend fun runDownload(
-        url: String,
-        title: String,
-        fileName: String,
-        mime: String,
-        totalHint: Long,
-    ) {
-        val id = DownloadRepository.add(title, url, fileName, totalHint)
+    private fun startDraining() {
+        synchronized(lock) {
+            if (draining) return
+            draining = true
+        }
+        scope.launch {
+            while (true) {
+                val job = synchronized(lock) { queue.removeFirstOrNull() } ?: break
+                runJob(job)
+                notifySummary()
+            }
+            synchronized(lock) { draining = false }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private suspend fun runJob(job: Job) {
+        val id = DownloadRepository.add(job.title, job.url, job.fileName, job.totalHint)
         DownloadRepository.setStatus(id, DownloadItem.Status.RUNNING)
 
-        val tmp = File(cacheDir, fileName)
+        val tmp = File(cacheDir, job.fileName)
         val ok = withContext(Dispatchers.IO) {
             NativeEngine.download(
-                url,
+                job.url,
                 tmp.absolutePath,
-                8,
-                totalHint,
+                AppSettings.connections.value,
+                job.totalHint,
                 ProgressCallback { downloaded, total ->
                     DownloadRepository.progress(id, downloaded, total)
-                    notifyProgress(title, downloaded, total)
+                    notifySummary()
                 },
             )
         }
 
         val published = ok && tmp.exists() && withContext(Dispatchers.IO) {
-            MediaStoreUtil.publish(this@DownloadService, tmp, fileName, mime)
+            MediaStoreUtil.publish(this@DownloadService, tmp, job.fileName, job.mime)
         }
         DownloadRepository.setStatus(
             id,
             if (published) DownloadItem.Status.DONE else DownloadItem.Status.FAILED,
         )
-
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
     }
 
-    private fun buildNotification(
-        title: String,
-        downloaded: Long,
-        total: Long,
-        indeterminate: Boolean,
-    ): Notification {
+    private fun parseJob(intent: Intent?): Job? {
+        val url = intent?.getStringExtra(EXTRA_URL) ?: return null
+        if (url.isBlank()) return null
+        return Job(
+            url = url,
+            title = intent.getStringExtra(EXTRA_TITLE) ?: "video",
+            fileName = intent.getStringExtra(EXTRA_FILE_NAME) ?: "video.mp4",
+            mime = intent.getStringExtra(EXTRA_MIME) ?: "video/mp4",
+            totalHint = intent.getLongExtra(EXTRA_TOTAL, 0L),
+        )
+    }
+
+    private fun buildNotification(): Notification {
+        val items = DownloadRepository.items.value
+        val active = items.filter { it.isActive }
+        val running = items.firstOrNull { it.status == DownloadItem.Status.RUNNING }
+
         val open = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val percent = if (total > 0) ((downloaded * 100) / total).toInt() else 0
-        return NotificationCompat.Builder(this, OpenVidApp.CHANNEL_ID)
+
+        val title = when {
+            active.size > 1 -> "Downloading ${active.size} videos"
+            active.size == 1 -> active.first().title
+            else -> "Downloads"
+        }
+
+        val builder = NotificationCompat.Builder(this, OpenVidApp.CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText("Downloading…")
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setOngoing(true)
+            .setOngoing(active.isNotEmpty())
             .setOnlyAlertOnce(true)
             .setContentIntent(open)
-            .setProgress(100, percent, indeterminate || total <= 0)
-            .build()
+
+        if (running != null && running.totalBytes > 0) {
+            val percent = (running.progress * 100).toInt()
+            builder.setContentText("$percent%")
+            builder.setProgress(100, percent, false)
+        } else {
+            builder.setContentText(if (active.isEmpty()) "Finishing…" else "Preparing…")
+            builder.setProgress(0, 0, true)
+        }
+        return builder.build()
     }
 
-    private fun notifyProgress(title: String, downloaded: Long, total: Long) {
-        getSystemService(NotificationManager::class.java)
-            .notify(NOTIF_ID, buildNotification(title, downloaded, total, indeterminate = false))
+    private fun notifySummary() {
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification())
     }
 
     override fun onDestroy() {

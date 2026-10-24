@@ -17,4 +17,7 @@ data class DownloadItem(
             totalBytes > 0 -> (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f)
             else -> 0f
         }
+
+    val isActive: Boolean
+        get() = status == Status.QUEUED || status == Status.RUNNING
 }

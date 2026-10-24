@@ -48,4 +48,14 @@ object DownloadRepository {
     fun setStatus(id: Long, status: DownloadItem.Status) {
         _items.value = _items.value.map { if (it.id == id) it.copy(status = status) else it }
     }
+
+    @Synchronized
+    fun clearFinished() {
+        _items.value = _items.value.filter { it.isActive }
+    }
+
+    @Synchronized
+    fun clearAll() {
+        _items.value = emptyList()
+    }
 }

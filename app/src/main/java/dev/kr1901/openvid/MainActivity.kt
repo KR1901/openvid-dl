@@ -7,10 +7,10 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import dev.kr1901.openvid.ui.AppRoot
-import dev.kr1901.openvid.ui.OpenVidTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -18,22 +18,20 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         maybeRequestNotificationPermission()
 
         val sharedUrl = extractSharedUrl(intent)
 
         setContent {
-            OpenVidTheme {
-                AppRoot(sharedUrl = sharedUrl)
-            }
+            AppRoot(sharedUrl = sharedUrl)
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // A production app would hand the new URL to the ViewModel here.
     }
 
     private fun maybeRequestNotificationPermission() {

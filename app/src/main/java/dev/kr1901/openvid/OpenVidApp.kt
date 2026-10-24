@@ -3,10 +3,13 @@ package dev.kr1901.openvid
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import dev.kr1901.openvid.data.AppSettings
 
 class OpenVidApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        AppSettings.init(this)
+
         val channel = NotificationChannel(
             CHANNEL_ID,
             getString(R.string.download_channel_name),

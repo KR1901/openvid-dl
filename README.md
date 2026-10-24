@@ -4,48 +4,51 @@
 
 `openvid-dl` is a native Android app (Kotlin + Jetpack Compose) powered by a
 Rust download engine bridged over JNI. Paste or share a link, or browse to a
-video in the built-in browser, pick the quality you want, and download it — the
-audio always comes along.
+page in the built-in browser, and download any — or every — video on it.
 
-> **Status: early MVP (v0.1), pre-build.** The project is complete as source but
-> has **not** been compiled in this environment (no JDK/Android SDK/NDK/Rust
-> toolchain available where it was written). Treat the first Android Studio
-> build as the real verification. See [Build](#build) and [Limitations](#limitations).
+> **Status: v0.3.0.** Built and packaged in CI on every push; see
+> [Releases](https://github.com/KR1901/openvid-dl/releases) for installable APKs.
 
 ## What it does
 
-- **Paste or share** — type a URL, paste from the clipboard, or share a link to
-  openvid-dl from any other app (the share-sheet intent is registered).
-- **Built-in browser** — a WebView that watches network traffic for media URLs
-  (`.m3u8`, `.mp4`, `.webm`, `.m4a`, `.mp3`) and lets you tap a detected stream
-  to fetch its formats.
-- **Pick any quality** — every stream the engine finds is listed with its
-  resolution/format; choose one and download.
-- **Fast downloads** — the Rust engine probes each server for HTTP range support
-  and, when available, pulls the file with several parallel connections.
-- **Audio included** — audio-only streams are selectable; HLS playlists are
-  handled by downloading and concatenating their segments.
-- **Foreground service** — downloads continue while you use the app, with
-  progress in the notification shade, and land in `Downloads/openvid-dl`.
+- **Find every video on a page.** The built-in browser watches network traffic
+  *and* probes the DOM for `<video>` / `<audio>` / `<source>` elements, so a page
+  with ten videos lists all ten.
+- **Download any, or each.** Tap the count pill to open the list: download a
+  single video at its best quality, open the quality picker for one, or tick
+  several and **Download selected**. With nothing ticked, one tap grabs them all.
+- **Any quality.** Every stream the engine finds is listed with its resolution
+  and format so you can choose.
+- **Fast.** The Rust engine probes each server for HTTP range support and, when
+  available, pulls the file over several parallel connections.
+- **A real download queue.** Batch selections are queued and processed in order,
+  with one summary notification and per-item progress in the Downloads tab.
+- **Paste or share.** Type a URL, paste from the clipboard, or share a link into
+  openvid-dl from any other app.
+- **Warm, editorial UI.** Paper-and-ink palette with a terracotta accent, serif
+  headings, light and dark themes (follow system, or force one in Settings).
 
 ## Architecture
 
 ```
 ┌────────────────────────────── Android app (Kotlin + Compose) ──────────────────────────────┐
-│  MainActivity ──▶ AppRoot ──▶ HomeScreen / BrowserScreen / DownloadsScreen                  │
-│        │                          │                                                          │
-│        │                     MainViewModel ──▶ NativeEngine (JNI)                            │
-│        │                          │                    │                                     │
-│   share intent                DownloadService ◀────────┘                                     │
-│  (ACTION_SEND)                (foreground, notification, MediaStore)                         │
-└──────────────────────────────────────────┬──────────────────────────────────────────────────┘
-                                            │  JNI
-┌───────────────────────────────────────────▼──────────────────────────────────────────────────┐
+│  MainActivity ─▶ AppRoot (theme, 4-tab shell)                                               │
+│      HomeScreen   BrowserScreen            DownloadsScreen      SettingsScreen              │
+│         │              │                          │                    │                    │
+│    MainViewModel   BrowserController         DownloadRepository   AppSettings               │
+│         │         (WebView + session)              ▲                                        │
+│         └──────────────┴───────────────┐           │                                        │
+│                                        ▼           │                                        │
+│                                  NativeEngine (JNI)│                                        │
+│                                        │      DownloadService (foreground, FIFO queue)     │
+└────────────────────────────────────────┼────────────┴────────────────────────────────────────┘
+                                         │ JNI
+┌────────────────────────────────────────▼─────────────────────────────────────────────────────┐
 │  Rust engine  (rust/, crate openvid-core → libopenvid_core.so)                                │
-│    extractor.rs  best-effort discovery (direct links, HTML5 <video>, OpenGraph, HLS)          │
-│    downloader.rs threaded, range-based parallel HTTP downloader                              │
-│    hls.rs        master-playlist variant selection + segment download/concat                 │
-│    android.rs    JNI exports (extractFormats, download)                                       │
+│    extractor.rs   best-effort discovery (direct links, HTML5 <video>, OpenGraph, HLS)         │
+│    downloader.rs  threaded, range-based parallel HTTP downloader                              │
+│    hls.rs         master-playlist variant selection + segment download/concat                 │
+│    android.rs     JNI exports (extractFormats, download)                                      │
 └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,38 +61,32 @@ audio always comes along.
 │       ├── java/dev/kr1901/openvid/
 │       │   ├── MainActivity.kt        share/view intents, notification permission
 │       │   ├── engine/                JNI bridge + format models
-│       │   ├── data/                  download list, foreground service
-│       │   ├── ui/                    Compose screens + theme + ViewModel
+│       │   ├── data/                  download queue, service, settings
+│       │   ├── ui/                    theme, components, screens, ViewModel
 │       │   └── util/                  MediaStore publishing
-│       ├── res/                       strings, theme, launcher icon
+│       ├── res/                       strings, colours, theme, launcher icon
 │       └── AndroidManifest.xml
 ├── rust/                      Native engine (Rust)
 │   └── src/{lib,extractor,downloader,hls,android,model,util}.rs  + bin/cli.rs
 ├── build.gradle.kts           root Gradle config (AGP 9.4.1, Kotlin 2.4.21)
 ├── settings.gradle.kts
-└── gradle/                    Gradle wrapper
+└── gradle/                    Gradle wrapper (9.8.2)
 ```
 
 ## Build
 
 ### Prerequisites
 
-- **Android Studio** (Ladybug or newer) with the **Android SDK** and **NDK**.
-- **Rust** (via [rustup](https://rustup.rs)) with the Android targets:
+- **Android Studio** (or a plain JDK 17 + Android SDK/NDK).
+- **Rust** with the Android targets:
   ```bash
   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
   ```
-- **cargo-ndk**:
-  ```bash
-  cargo install cargo-ndk
-  export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/<version>"
-  ```
+- **cargo-ndk**: `cargo install cargo-ndk`, and `ANDROID_NDK_HOME` pointing at an NDK.
 
 ### Build the APK
 
 ```bash
-git clone https://github.com/KR1901/openvid-dl
-cd openvid-dl
 ./gradlew :app:assembleDebug     # -> app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:assembleRelease   # -> app/build/outputs/apk/release/app-release.apk
 ```
@@ -102,14 +99,24 @@ native engine too.
 ### Build without Android Studio (GitHub Actions)
 
 You don't need Android Studio, a local SDK, or Rust installed. The `Build APK`
-workflow (`.github/workflows/build-apk.yml`) builds both APKs in the cloud:
+workflow builds both APKs in the cloud:
 
-- automatically on every push to `main`, and on tags like `v0.1.0`;
+- automatically on every push to `main`, and on tags like `v0.3.0`;
 - manually from **Actions → Build APK → Run workflow**.
 
-Download the result from the run's **Artifacts** section. Pushing a tag (for
-example `git tag v0.1.0 && git push origin v0.1.0`) also creates a GitHub
-Release with both APKs attached, which is the easiest way to share them.
+Download the result from the run's **Artifacts** section, or from the
+[Releases](https://github.com/KR1901/openvid-dl/releases) page for tagged builds.
+
+### Cutting a release
+
+```bash
+# bump versionCode/versionName in app/build.gradle.kts, then:
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+The workflow builds both APKs and publishes them on the Releases page as
+`openvid-dl-v0.3.0-release.apk` and `openvid-dl-v0.3.0-debug.apk`, with
+auto-generated release notes.
 
 ### Release signing
 
@@ -120,8 +127,6 @@ to the debug key otherwise — so it always produces an installable APK:
   fill it in (it is git-ignored);
 - **in CI** — add repository secrets `KEYSTORE_BASE64` (base64 of your `.jks`),
   `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`.
-
-Create a keystore with:
 
 ```bash
 keytool -genkeypair -v -keystore release.jks -keyalg RSA -keysize 2048 \
@@ -151,17 +156,19 @@ Being honest about the MVP:
   thousands of sites with per-site logic, the Rust engine only understands
   direct media links, common HTML5 `<video>`/`<source>`/OpenGraph tags, and HLS
   playlists. Sites that serve media through proprietary players, DRM, or signed
-  APIs will not work. Broadening coverage means adding extractors (see roadmap).
+  APIs will not work.
+- **`blob:` / MediaSource playback can't be downloaded.** Many modern players
+  feed the video element from JavaScript; there is no downloadable URL to grab.
 - **HLS output is MPEG-TS**, not MP4 — remuxing would require a muxer, which is
   not bundled.
+- **Downloads run one at a time** (each file still uses parallel connections).
 - **DRM-protected content is out of scope** and always will be.
-- **Not compiled yet.** See the status note at the top.
 
 ## Roadmap
 
 - Per-site extractors (start with the most requested sites).
 - Bundle a muxer so HLS and separate video/audio streams become MP4.
-- Download queue with pause/resume and persistence.
+- Pause/resume and persistence for the download queue.
 - Subtitle and thumbnail embedding.
 
 ## Legal

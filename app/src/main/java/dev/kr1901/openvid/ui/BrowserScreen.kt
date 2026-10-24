@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -34,10 +33,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -52,6 +49,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -72,8 +70,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.kr1901.openvid.engine.MediaFormat
-import dev.kr1901.openvid.engine.MediaInfoParser
-import dev.kr1901.openvid.engine.NativeEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -103,29 +99,61 @@ fun BrowserScreen(
     var showSheet by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<String?>(null) }
     var fetching by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val formats = remember { mutableStateListOf<MediaFormat>() }
     var selectedFormat by remember { mutableStateOf<String?>(null) }
+    val picked = remember { mutableStateListOf<String>() }
 
-    fun fetchFormats(url: String) {
+    fun loadFormats(url: String) {
         selected = url
         error = null
         formats.clear()
         selectedFormat = null
         fetching = true
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { MediaInfoParser.parse(NativeEngine.extractFormats(url)) }
-            }
+            val list = withContext(Dispatchers.IO) { resolveFormats(url) }
             fetching = false
-            result.onSuccess { info ->
-                formats.addAll(info.formats)
-                selectedFormat = (info.formats.firstOrNull { it.kind != "audio" }
-                    ?: info.formats.firstOrNull())?.id
-                if (info.formats.isEmpty()) error = "No downloadable formats were found."
-            }.onFailure { e ->
-                error = e.message ?: "Could not read this link."
+            formats.addAll(list)
+            selectedFormat = (list.firstOrNull { it.kind != "audio" } ?: list.firstOrNull())?.id
+            if (list.isEmpty()) error = "No downloadable formats were found for this link."
+        }
+    }
+
+    /** Queue one URL at its best available quality. */
+    fun quickDownload(url: String) {
+        scope.launch {
+            busy = true
+            val format = withContext(Dispatchers.IO) { resolveBestFormat(url) }
+            busy = false
+            if (format != null) {
+                launchDownload(context, format, fileNameOf(url))
+                onMessage("Queued download")
+            } else {
+                onMessage("Couldn't find a downloadable stream")
             }
+        }
+    }
+
+    /** Queue several URLs at once. */
+    fun downloadMany(urls: List<String>) {
+        if (urls.isEmpty()) return
+        scope.launch {
+            busy = true
+            var queued = 0
+            withContext(Dispatchers.IO) {
+                urls.forEach { url ->
+                    val format = resolveBestFormat(url)
+                    if (format != null) {
+                        launchDownload(context, format, fileNameOf(url))
+                        queued++
+                    }
+                }
+            }
+            busy = false
+            showSheet = false
+            picked.clear()
+            onMessage(if (queued == 0) "Nothing downloadable found" else "Queued $queued download(s)")
         }
     }
 
@@ -166,6 +194,7 @@ fun BrowserScreen(
                 count = controller.detected.size,
                 onClick = {
                     selected = null
+                    picked.clear()
                     showSheet = true
                 },
             )
@@ -182,30 +211,67 @@ fun BrowserScreen(
             ) {
                 if (selected == null) {
                     Text(
-                        "Media found",
+                        "Videos on this page",
                         style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Medium,
                     )
+                    Spacer(Modifier.height(2.dp))
                     Text(
-                        "${controller.detected.size} stream(s) detected on this page",
+                        "${controller.detected.size} downloadable stream(s) found",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(14.dp))
-                    FilledTonalButton(
-                        onClick = { fetchFormats(controller.currentUrl) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Filled.Language, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Use this page's link")
-                    }
                     Spacer(Modifier.height(10.dp))
-                    LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                        items(controller.detected, key = { it }) { url ->
-                            MediaRow(url = url, onClick = { fetchFormats(url) })
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val allPicked = picked.size == controller.detected.size && controller.detected.isNotEmpty()
+                        TextButton(onClick = {
+                            if (allPicked) picked.clear() else {
+                                picked.clear()
+                                picked.addAll(controller.detected)
+                            }
+                        }) {
+                            Text(if (allPicked) "Clear selection" else "Select all")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = { loadFormats(controller.currentUrl) }) {
+                            Icon(Icons.Filled.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("This page")
                         }
                     }
+                    Spacer(Modifier.height(6.dp))
+                    LazyColumn(
+                        Modifier.heightIn(max = 380.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(controller.detected, key = { it }) { url ->
+                            VideoCard(
+                                title = fileNameOf(url),
+                                subtitle = hostOf(url),
+                                isAudio = AUDIO_REGEX.containsMatchIn(url),
+                                selected = picked.contains(url),
+                                selectable = true,
+                                onToggleSelect = {
+                                    if (picked.contains(url)) picked.remove(url) else picked.add(url)
+                                },
+                                onDownload = { quickDownload(url) },
+                                onClick = { loadFormats(url) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    val targets = if (picked.isEmpty()) controller.detected.toList() else controller.detected.filter { picked.contains(it) }
+                    PrimaryAction(
+                        text = when {
+                            busy -> "Queueing…"
+                            picked.isEmpty() -> "Download all (${targets.size})"
+                            else -> "Download selected (${targets.size})"
+                        },
+                        icon = Icons.Filled.Download,
+                        onClick = { downloadMany(targets) },
+                        enabled = targets.isNotEmpty() && !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = {
@@ -242,7 +308,7 @@ fun BrowserScreen(
                         error != null -> {
                             Text(error!!, color = MaterialTheme.colorScheme.error)
                             Spacer(Modifier.height(10.dp))
-                            FilledTonalButton(onClick = { fetchFormats(selected!!) }) { Text("Retry") }
+                            FilledTonalButton(onClick = { loadFormats(selected!!) }) { Text("Retry") }
                         }
 
                         else -> {
@@ -270,21 +336,19 @@ fun BrowserScreen(
                                 }
                             }
                             Spacer(Modifier.height(14.dp))
-                            Button(
+                            PrimaryAction(
+                                text = "Download",
+                                icon = Icons.Filled.Download,
                                 onClick = {
                                     formats.firstOrNull { it.id == selectedFormat }?.let { format ->
                                         launchDownload(context, format, fileNameOf(selected!!))
                                         showSheet = false
-                                        onMessage("Download started")
+                                        onMessage("Queued download")
                                     }
                                 },
                                 enabled = selectedFormat != null,
                                 modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text("Download")
-                            }
+                            )
                         }
                     }
                 }
@@ -306,7 +370,7 @@ private fun AddressBar(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 3.dp,
+        tonalElevation = 2.dp,
     ) {
         Row(
             Modifier
@@ -320,12 +384,12 @@ private fun AddressBar(
                 onValueChange = { text = it },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
-                shape = RoundedCornerShape(24.dp),
+                shape = MaterialTheme.shapes.large,
                 textStyle = MaterialTheme.typography.bodyMedium,
                 placeholder = { Text("Search or enter address", maxLines = 1) },
                 leadingIcon = {
                     Icon(
-                        if (secure) Icons.Filled.Lock else Icons.Filled.Language,
+                        if (secure) Icons.Filled.Lock else Icons.Filled.Search,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
                     )
@@ -364,60 +428,9 @@ private fun BoxScope.MediaFab(visible: Boolean, count: Int, onClick: () -> Unit)
         ExtendedFloatingActionButton(
             onClick = onClick,
             icon = { Icon(Icons.Filled.Download, contentDescription = null) },
-            text = { Text("Download ($count)") },
+            text = { Text(if (count == 1) "1 video" else "$count videos") },
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
-        )
-    }
-}
-
-@Composable
-private fun MediaRow(url: String, onClick: () -> Unit) {
-    val isAudio = remember(url) { AUDIO_REGEX.containsMatchIn(url) }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            modifier = Modifier.size(42.dp),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    if (isAudio) Icons.Filled.MusicNote else Icons.Filled.Movie,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                fileNameOf(url),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                hostOf(url),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Icon(
-            Icons.AutoMirrored.Filled.ArrowForward,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp),
         )
     }
 }
