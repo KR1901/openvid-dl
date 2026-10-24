@@ -1,12 +1,12 @@
 package dev.kr1901.openvid.ui
 
-import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,21 +23,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -77,14 +79,6 @@ import kotlinx.coroutines.withContext
 
 private val AUDIO_REGEX = Regex("""(?i)\.(mp3|m4a|aac|ogg|opus)(\?|#|$)""")
 
-private fun fileNameOf(url: String): String {
-    val name = runCatching { Uri.parse(url).lastPathSegment }.getOrNull()
-    return name?.takeIf { it.isNotBlank() } ?: url
-}
-
-private fun hostOf(url: String): String =
-    runCatching { Uri.parse(url).host }.getOrNull() ?: url
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(
@@ -96,7 +90,12 @@ fun BrowserScreen(
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
+    val tab = controller.active
+
+    var editing by remember { mutableStateOf(false) }
+    var showTabs by remember { mutableStateOf(false) }
     var showSheet by remember { mutableStateOf(false) }
+
     var selected by remember { mutableStateOf<String?>(null) }
     var fetching by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -120,7 +119,6 @@ fun BrowserScreen(
         }
     }
 
-    /** Queue one URL at its best available quality. */
     fun quickDownload(url: String) {
         scope.launch {
             busy = true
@@ -135,7 +133,6 @@ fun BrowserScreen(
         }
     }
 
-    /** Queue several URLs at once. */
     fun downloadMany(urls: List<String>) {
         if (urls.isEmpty()) return
         scope.launch {
@@ -157,11 +154,16 @@ fun BrowserScreen(
         }
     }
 
-    // Back should walk the page history before leaving the app.
-    BackHandler(enabled = controller.canGoBack) { controller.back() }
+    // One back handler: close the tab switcher first, then walk page history.
+    BackHandler(enabled = showTabs || tab.canGoBack) {
+        when {
+            showTabs -> showTabs = false
+            else -> controller.back()
+        }
+    }
 
-    // Periodically ask the page which media elements it exposes.
-    LaunchedEffect(Unit) {
+    // Probe the active page for media every few seconds.
+    LaunchedEffect(tab.id) {
         while (true) {
             delay(2500)
             controller.probe()
@@ -169,29 +171,24 @@ fun BrowserScreen(
     }
 
     Column(modifier.fillMaxSize()) {
-        AddressBar(
-            address = controller.address,
-            secure = controller.secure,
-            loading = controller.loading,
-            onGo = { target -> controller.go(target) },
-            onReload = { controller.reload() },
-        )
-        AnimatedVisibility(visible = controller.loading) {
-            LinearProgressIndicator(
-                progress = { controller.progress / 100f },
-                modifier = Modifier.fillMaxWidth().height(2.dp),
-            )
-        }
-
         Box(Modifier.weight(1f)) {
             AndroidView(
-                factory = { controller.ensureWebView() },
+                factory = { controller.ensureWebView(tab) },
                 modifier = Modifier.fillMaxSize(),
             )
 
-            MediaFab(
-                visible = controller.detected.isNotEmpty(),
-                count = controller.detected.size,
+            if (tab.loading) {
+                LinearProgressIndicator(
+                    progress = { tab.progress / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .align(Alignment.TopCenter),
+                )
+            }
+
+            MediaChip(
+                count = tab.detected.size,
                 onClick = {
                     selected = null
                     picked.clear()
@@ -199,6 +196,29 @@ fun BrowserScreen(
                 },
             )
         }
+
+        BrowserBottomBar(
+            tab = tab,
+            editing = editing,
+            tabCount = controller.tabs.size,
+            onStartEditing = { editing = true },
+            onStopEditing = { editing = false },
+            onGo = { controller.go(it) },
+            onBack = { controller.back() },
+            onDownload = {
+                selected = null
+                picked.clear()
+                showSheet = true
+            },
+            onTabs = { showTabs = true },
+        )
+    }
+
+    if (showTabs) {
+        TabsOverlay(
+            controller = controller,
+            onDismiss = { showTabs = false },
+        )
     }
 
     if (showSheet) {
@@ -209,147 +229,177 @@ fun BrowserScreen(
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 28.dp),
             ) {
-                if (selected == null) {
-                    Text(
-                        "Videos on this page",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "${controller.detected.size} downloadable stream(s) found",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val allPicked = picked.size == controller.detected.size && controller.detected.isNotEmpty()
-                        TextButton(onClick = {
-                            if (allPicked) picked.clear() else {
-                                picked.clear()
-                                picked.addAll(controller.detected)
+                when {
+                    selected != null -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                selected = null
+                                formats.clear()
+                                error = null
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
-                        }) {
-                            Text(if (allPicked) "Clear selection" else "Select all")
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    fileNameOf(selected!!),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    hostOf(selected!!),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { loadFormats(controller.currentUrl) }) {
-                            Icon(Icons.Filled.Language, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("This page")
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    LazyColumn(
-                        Modifier.heightIn(max = 380.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(controller.detected, key = { it }) { url ->
-                            VideoCard(
-                                title = fileNameOf(url),
-                                subtitle = hostOf(url),
-                                isAudio = AUDIO_REGEX.containsMatchIn(url),
-                                selected = picked.contains(url),
-                                selectable = true,
-                                onToggleSelect = {
-                                    if (picked.contains(url)) picked.remove(url) else picked.add(url)
-                                },
-                                onDownload = { quickDownload(url) },
-                                onClick = { loadFormats(url) },
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    val targets = if (picked.isEmpty()) controller.detected.toList() else controller.detected.filter { picked.contains(it) }
-                    PrimaryAction(
-                        text = when {
-                            busy -> "Queueing…"
-                            picked.isEmpty() -> "Download all (${targets.size})"
-                            else -> "Download selected (${targets.size})"
-                        },
-                        icon = Icons.Filled.Download,
-                        onClick = { downloadMany(targets) },
-                        enabled = targets.isNotEmpty() && !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = {
-                            selected = null
-                            formats.clear()
-                            error = null
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                fileNameOf(selected!!),
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                hostOf(selected!!),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(10.dp))
 
-                    when {
-                        fetching -> Box(
-                            Modifier.fillMaxWidth().height(140.dp),
-                            contentAlignment = Alignment.Center,
-                        ) { CircularProgressIndicator() }
+                        when {
+                            fetching -> Box(
+                                Modifier.fillMaxWidth().height(140.dp),
+                                contentAlignment = Alignment.Center,
+                            ) { CircularProgressIndicator() }
 
-                        error != null -> {
-                            Text(error!!, color = MaterialTheme.colorScheme.error)
-                            Spacer(Modifier.height(10.dp))
-                            FilledTonalButton(onClick = { loadFormats(selected!!) }) { Text("Retry") }
-                        }
+                            error != null -> {
+                                Text(error!!, color = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.height(10.dp))
+                                FilledTonalButton(onClick = { loadFormats(selected!!) }) { Text("Retry") }
+                            }
 
-                        else -> {
-                            LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                                items(formats, key = { it.id }) { format ->
-                                    Row(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .clickable { selectedFormat = format.id }
-                                            .padding(vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        RadioButton(
-                                            selected = format.id == selectedFormat,
-                                            onClick = { selectedFormat = format.id },
-                                        )
-                                        Text(
-                                            format.label,
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
+                            else -> {
+                                LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                                    items(formats, key = { it.id }) { format ->
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .clickable { selectedFormat = format.id }
+                                                .padding(vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            RadioButton(
+                                                selected = format.id == selectedFormat,
+                                                onClick = { selectedFormat = format.id },
+                                            )
+                                            Text(
+                                                format.label,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
                                     }
                                 }
+                                Spacer(Modifier.height(14.dp))
+                                PrimaryAction(
+                                    text = "Download",
+                                    icon = Icons.Filled.Download,
+                                    onClick = {
+                                        formats.firstOrNull { it.id == selectedFormat }?.let { format ->
+                                            launchDownload(context, format, fileNameOf(selected!!))
+                                            showSheet = false
+                                            onMessage("Queued download")
+                                        }
+                                    },
+                                    enabled = selectedFormat != null,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
                             }
-                            Spacer(Modifier.height(14.dp))
-                            PrimaryAction(
-                                text = "Download",
-                                icon = Icons.Filled.Download,
-                                onClick = {
-                                    formats.firstOrNull { it.id == selectedFormat }?.let { format ->
-                                        launchDownload(context, format, fileNameOf(selected!!))
-                                        showSheet = false
-                                        onMessage("Queued download")
-                                    }
-                                },
-                                enabled = selectedFormat != null,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
                         }
+                    }
+
+                    tab.detected.isEmpty() -> {
+                        Text(
+                            "Nothing detected yet",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Play the video for a moment so the page starts streaming, " +
+                                "or try extracting from the page link itself.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        PrimaryAction(
+                            text = "Try this page's link",
+                            icon = Icons.Filled.Language,
+                            onClick = { loadFormats(tab.url) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    else -> {
+                        Text(
+                            "Videos on this page",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "${tab.detected.size} downloadable stream(s) found",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val allPicked = picked.size == tab.detected.size
+                            TextButton(onClick = {
+                                if (allPicked) {
+                                    picked.clear()
+                                } else {
+                                    picked.clear()
+                                    picked.addAll(tab.detected)
+                                }
+                            }) {
+                                Text(if (allPicked) "Clear selection" else "Select all")
+                            }
+                            Spacer(Modifier.weight(1f))
+                            TextButton(onClick = { loadFormats(tab.url) }) {
+                                Icon(Icons.Filled.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("This page")
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        LazyColumn(
+                            Modifier.heightIn(max = 360.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(tab.detected, key = { it }) { url ->
+                                VideoCard(
+                                    title = fileNameOf(url),
+                                    subtitle = hostOf(url),
+                                    isAudio = AUDIO_REGEX.containsMatchIn(url),
+                                    selected = picked.contains(url),
+                                    selectable = true,
+                                    onToggleSelect = {
+                                        if (picked.contains(url)) picked.remove(url) else picked.add(url)
+                                    },
+                                    onDownload = { quickDownload(url) },
+                                    onClick = { loadFormats(url) },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        val targets =
+                            if (picked.isEmpty()) tab.detected.toList()
+                            else tab.detected.filter { picked.contains(it) }
+                        PrimaryAction(
+                            text = when {
+                                busy -> "Queueing…"
+                                picked.isEmpty() -> "Download all (${targets.size})"
+                                else -> "Download selected (${targets.size})"
+                            },
+                            icon = Icons.Filled.Download,
+                            onClick = { downloadMany(targets) },
+                            enabled = targets.isNotEmpty() && !busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
             }
@@ -358,59 +408,163 @@ fun BrowserScreen(
 }
 
 @Composable
-private fun AddressBar(
-    address: String,
-    secure: Boolean,
-    loading: Boolean,
+private fun BrowserBottomBar(
+    tab: BrowserTab,
+    editing: Boolean,
+    tabCount: Int,
+    onStartEditing: () -> Unit,
+    onStopEditing: () -> Unit,
     onGo: (String) -> Unit,
-    onReload: () -> Unit,
+    onBack: () -> Unit,
+    onDownload: () -> Unit,
+    onTabs: () -> Unit,
 ) {
-    var text by remember(address) { mutableStateOf(address) }
-
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
+        tonalElevation = 3.dp,
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                shape = MaterialTheme.shapes.large,
-                textStyle = MaterialTheme.typography.bodyMedium,
-                placeholder = { Text("Search or enter address", maxLines = 1) },
-                leadingIcon = {
-                    Icon(
-                        if (secure) Icons.Filled.Lock else Icons.Filled.Search,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                },
-                trailingIcon = {
-                    if (text.isNotEmpty()) {
-                        IconButton(onClick = { text = "" }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+            IconButton(onClick = onBack, enabled = tab.canGoBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+
+            if (editing) {
+                var text by remember(tab.url) { mutableStateOf(tab.url) }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.large,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    placeholder = { Text("Search or enter address", maxLines = 1) },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Uri,
+                        imeAction = ImeAction.Go,
+                    ),
+                    keyboardActions = KeyboardActions(onGo = {
+                        onGo(text)
+                        onStopEditing()
+                    }),
+                    trailingIcon = {
+                        IconButton(onClick = onStopEditing) {
+                            Icon(Icons.Filled.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
                         }
+                    },
+                )
+                Spacer(Modifier.width(4.dp))
+                FilledIconButton(onClick = {
+                    onGo(text)
+                    onStopEditing()
+                }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Go")
+                }
+            } else {
+                AddressPill(tab = tab, onClick = onStartEditing, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(4.dp))
+                Box {
+                    IconButton(onClick = onDownload) {
+                        Icon(Icons.Filled.Download, contentDescription = "Download")
                     }
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Uri,
-                    imeAction = ImeAction.Go,
-                ),
-                keyboardActions = KeyboardActions(onGo = { onGo(text) }),
+                    CountBadge(count = tab.detected.size, modifier = Modifier.align(Alignment.TopEnd))
+                }
+                Box {
+                    IconButton(onClick = onTabs) {
+                        Icon(Icons.Filled.Tab, contentDescription = "Tabs")
+                    }
+                    CountBadge(count = tabCount, showWhenOne = false, modifier = Modifier.align(Alignment.TopEnd))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddressPill(tab: BrowserTab, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (tab.secure) Icons.Filled.Lock else Icons.Filled.Language,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
             )
-            FilledIconButton(onClick = { if (loading) onReload() else onGo(text) }) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                hostOf(tab.url),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CountBadge(count: Int, showWhenOne: Boolean = true, modifier: Modifier = Modifier) {
+    val visible = count > 0 && (showWhenOne || count > 1)
+    if (!visible) return
+    Box(
+        modifier
+            .padding(top = 4.dp, end = 2.dp)
+            .size(16.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primary),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            if (count > 99) "99" else "$count",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimary,
+        )
+    }
+}
+
+@Composable
+private fun BoxScope.MediaChip(count: Int, onClick: () -> Unit) {
+    AnimatedVisibility(
+        visible = count > 0,
+        enter = fadeIn() + slideInVertically { it / 2 },
+        exit = fadeOut() + slideOutVertically { it / 2 },
+        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary,
+        ) {
+            Row(
+                Modifier
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Icon(
-                    if (loading) Icons.Filled.Refresh else Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = if (loading) "Reload" else "Go",
+                    Icons.Filled.Download,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (count == 1) "1 video" else "$count videos",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimary,
                 )
             }
         }
@@ -418,19 +572,87 @@ private fun AddressBar(
 }
 
 @Composable
-private fun BoxScope.MediaFab(visible: Boolean, count: Int, onClick: () -> Unit) {
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn() + slideInVertically { it / 2 },
-        exit = fadeOut() + slideOutVertically { it / 2 },
-        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-    ) {
-        ExtendedFloatingActionButton(
-            onClick = onClick,
-            icon = { Icon(Icons.Filled.Download, contentDescription = null) },
-            text = { Text(if (count == 1) "1 video" else "$count videos") },
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-        )
+private fun TabsOverlay(controller: BrowserController, onDismiss: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Tabs",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = {
+                    controller.openTab()
+                    onDismiss()
+                }) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("New tab")
+                }
+                TextButton(onClick = onDismiss) { Text("Done") }
+            }
+            Spacer(Modifier.height(12.dp))
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                itemsIndexed(controller.tabs, key = { _, t -> t.id }) { index, item ->
+                    SurfaceCard(onClick = {
+                        controller.selectTab(index)
+                        onDismiss()
+                    }) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                shape = CircleShape,
+                                color = if (index == controller.activeIndex) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                                modifier = Modifier.size(38.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        if (item.secure) Icons.Filled.Lock else Icons.Filled.Language,
+                                        contentDescription = null,
+                                        tint = if (index == controller.activeIndex) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    item.label,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    hostOf(item.url),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            IconButton(onClick = { controller.closeTab(index) }) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "Close tab",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

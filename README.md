@@ -11,9 +11,15 @@ page in the built-in browser, and download any — or every — video on it.
 
 ## What it does
 
+- **A real mobile browser.** Multiple tabs, each with its own page, history and
+  list of detected videos. The address bar sits at the bottom where your thumb
+  is, and the tab switcher is one tap away.
 - **Find every video on a page.** The built-in browser watches network traffic
   *and* probes the DOM for `<video>` / `<audio>` / `<source>` elements, so a page
   with ten videos lists all ten.
+- **A download action is always available.** The download button in the bottom
+  bar is there whether or not anything has been detected yet, so you are never
+  stuck with no way in.
 - **Download any, or each.** Tap the count pill to open the list: download a
   single video at its best quality, open the quality picker for one, or tick
   several and **Download selected**. With nothing ticked, one tap grabs them all.
@@ -51,6 +57,11 @@ page in the built-in browser, and download any — or every — video on it.
 │    android.rs     JNI exports (extractFormats, download)                                      │
 └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+HTTP is handled by `ureq` — a pure blocking client with no async runtime, using
+bundled webpki roots. This is deliberate: reqwest 0.13's `rustls` feature
+hard-wires `rustls-platform-verifier`, which needs a JVM `Context` on Android and
+panics without one (surfacing as "event loop thread panicked").
 
 ## Layout
 
