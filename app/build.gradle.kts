@@ -1,9 +1,11 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 
+// AGP 9 provides Kotlin support built in, so the `org.jetbrains.kotlin.android`
+// plugin is intentionally NOT applied here. Compose still needs its compiler
+// plugin.
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -86,6 +88,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // With AGP 9's built-in Kotlin, Kotlin compiler options live inside the
+    // `android` block (replacing the old `kotlinOptions {}`).
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+        }
+    }
+
     buildFeatures {
         compose = true
     }
@@ -94,12 +104,6 @@ android {
         jniLibs {
             useLegacyPackaging = false
         }
-    }
-}
-
-kotlin {
-    compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
