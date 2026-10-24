@@ -14,7 +14,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -28,11 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.kr1901.openvid.data.DownloadService
 import dev.kr1901.openvid.engine.MediaFormat
 
 @Composable
-fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
+fun HomeScreen(
+    vm: MainViewModel,
+    onMessage: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
 
@@ -53,6 +60,8 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
                 Text(if (state.loading) "Fetching…" else "Fetch formats")
             }
             OutlinedButton(onClick = { vm.onUrlChange(pasteFromClipboard(context)) }) {
+                Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
                 Text("Paste")
             }
         }
@@ -86,11 +95,16 @@ fun HomeScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = {
-                    vm.selectedFormat()?.let { startDownload(context, it, state.title ?: "video") }
+                    vm.selectedFormat()?.let { format ->
+                        launchDownload(context, format, state.title ?: "video")
+                        onMessage("Download started")
+                    }
                 },
                 enabled = state.selectedId != null,
                 modifier = Modifier.fillMaxWidth(),
             ) {
+                Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
                 Text("Download")
             }
         } else {
@@ -125,11 +139,4 @@ private fun FormatRow(format: MediaFormat, selected: Boolean, onSelect: () -> Un
 private fun pasteFromClipboard(context: Context): String {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     return manager.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
-}
-
-private fun startDownload(context: Context, format: MediaFormat, title: String) {
-    val safe = title.replace(Regex("[^A-Za-z0-9._ -]"), "_").take(80).ifBlank { "video" }
-    val fileName = "$safe.${format.ext}"
-    val mime = if (format.isAudio) "audio/mpeg" else "video/mp4"
-    DownloadService.start(context, format.url, title, fileName, mime, format.filesize ?: 0L)
 }
