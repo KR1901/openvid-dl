@@ -42,7 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier) {
+fun SettingsScreen(onOpenInBrowser: (String) -> Unit, modifier: Modifier = Modifier) {
     val themeMode by AppSettings.themeMode.collectAsState()
     val connections by AppSettings.connections.collectAsState()
     val ytReady by Diagnostics.ytDlpReady.collectAsState()
@@ -190,6 +190,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         }
                     },
                 ) { Text("Update yt-dlp") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { onOpenInBrowser("https://vk.com/login") }) {
+                    Text("Sign in to VK")
+                }
+                TextButton(
+                    enabled = testUrl.isNotBlank(),
+                    onClick = { onOpenInBrowser(testUrl.trim()) },
+                ) { Text("Open in browser") }
             }
 
             if (report.isNotBlank()) {

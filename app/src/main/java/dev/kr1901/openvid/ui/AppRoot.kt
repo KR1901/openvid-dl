@@ -141,7 +141,13 @@ private fun AppScaffold(sharedUrl: String?) {
             Tab.HOME -> HomeScreen(vm, showMessage, modifier)
             Tab.BROWSER -> BrowserScreen(browser, showMessage, modifier)
             Tab.DOWNLOADS -> DownloadsScreen(modifier)
-            Tab.SETTINGS -> SettingsScreen(modifier)
+            Tab.SETTINGS -> SettingsScreen(
+                onOpenInBrowser = { url ->
+                    browser.openTab(url)
+                    tab = Tab.BROWSER
+                },
+                modifier = modifier,
+            )
         }
     }
 }

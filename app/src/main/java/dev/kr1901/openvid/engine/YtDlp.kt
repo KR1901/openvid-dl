@@ -110,11 +110,32 @@ object YtDlp {
             }
         }
 
+        val hint = notes.firstNotNullOfOrNull { hintFor(it) }
         Diagnostics.report(
             "yt-dlp could not extract this link (${notes.size} attempt(s)):\n\n" +
-                notes.joinToString("\n\n"),
+                notes.joinToString("\n\n") +
+                if (hint != null) "\n\n→ $hint" else "",
         )
         return null
+    }
+
+    /**
+     * Turn a raw extractor failure into something actionable. VK in particular
+     * fails in confusing ways when there is no session.
+     */
+    private fun hintFor(message: String): String? = when {
+        message.contains("KeyError('params')") || message.contains("registered users") ->
+            "VK is almost certainly asking for a login. Tap 'Sign in to VK' below, " +
+                "sign in, then test again."
+
+        message.contains("Connection reset") ->
+            "VK reset the connection, which it does for unauthenticated requests. " +
+                "Sign in via the Browser tab and retry."
+
+        message.contains("not available in your region") ->
+            "VK says this video is blocked in your region."
+
+        else -> null
     }
 
     private fun hostLabel(url: String): String =
@@ -178,32 +199,46 @@ object YtDlp {
      * file is the supported approach and covers every host the extractor uses.
      */
     private fun cookieFile(context: Context, url: String): File? {
-        val raw = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
-        if (raw.isNullOrBlank()) return null
         val host = runCatching { Uri.parse(url).host }.getOrNull() ?: return null
-        val domain = "." + host.removePrefix("www.")
+
+        val domains = LinkedHashSet<String>()
+        domains += host.removePrefix("www.")
+        // A VK session is spread across several hosts, and the extractor talks to
+        // more than one of them, so include them all.
+        if (host.endsWith("vk.com") || host.endsWith("vk.ru") || host.endsWith("vkvideo.ru")) {
+            domains += "vk.com"
+            domains += "vkvideo.ru"
+        }
+
+        val text = StringBuilder("# Netscape HTTP Cookie File\n")
+        var found = false
+        for (domain in domains) {
+            val raw = runCatching {
+                CookieManager.getInstance().getCookie("https://$domain/")
+            }.getOrNull()
+            if (raw.isNullOrBlank()) continue
+            raw.split(';').forEach { part ->
+                val entry = part.trim()
+                val eq = entry.indexOf('=')
+                if (eq <= 0) return@forEach
+                val name = entry.substring(0, eq).trim()
+                val value = entry.substring(eq + 1).trim()
+                if (name.isEmpty()) return@forEach
+                text.append('.').append(domain).append('\t')
+                    .append("TRUE").append('\t')
+                    .append('/').append('\t')
+                    .append("TRUE").append('\t')
+                    .append("0").append('\t')
+                    .append(name).append('\t')
+                    .append(value).append('\n')
+                found = true
+            }
+        }
+        if (!found) return null
 
         return runCatching {
             val file = File(context.cacheDir, "openvid-cookies.txt")
-            val text = buildString {
-                append("# Netscape HTTP Cookie File\n")
-                raw.split(';').forEach { part ->
-                    val entry = part.trim()
-                    val eq = entry.indexOf('=')
-                    if (eq <= 0) return@forEach
-                    val name = entry.substring(0, eq).trim()
-                    val value = entry.substring(eq + 1).trim()
-                    if (name.isEmpty()) return@forEach
-                    append(domain).append('\t')
-                        .append("TRUE").append('\t')
-                        .append('/').append('\t')
-                        .append("TRUE").append('\t')
-                        .append("0").append('\t')
-                        .append(name).append('\t')
-                        .append(value).append('\n')
-                }
-            }
-            file.writeText(text)
+            file.writeText(text.toString())
             file
         }.getOrNull()
     }
