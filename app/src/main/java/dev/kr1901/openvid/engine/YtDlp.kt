@@ -3,6 +3,8 @@ package dev.kr1901.openvid.engine
 import android.content.Context
 import android.util.Log
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDL.UpdateChannel
+import dev.kr1901.openvid.data.Diagnostics
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -10,31 +12,61 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * It hands us format URLs (plus any required HTTP headers) and our own Rust
  * downloader fetches the bytes — so ffmpeg is deliberately not bundled, since we
- * never ask yt-dlp to download or merge anything. That keeps roughly 40 MB out
- * of the APK compared to the usual "bundle everything" approach.
+ * never ask yt-dlp to download or merge anything.
  *
  * Every call is defensive: if yt-dlp is unavailable or fails, callers fall back
- * to the native extractor rather than surfacing an error.
+ * to the native extractor. Status is published to [Diagnostics] so the failure
+ * is visible in Settings rather than silent.
  */
 object YtDlp {
     private const val TAG = "openvid-dl"
     private val ready = AtomicBoolean(false)
 
-    fun init(context: Context) {
+    fun init(context: Context, allowUpdate: Boolean) {
         try {
             YoutubeDL.getInstance().init(context.applicationContext)
             ready.set(true)
-            Log.i(TAG, "yt-dlp ready")
+            Diagnostics.setYtDlp(true, version(context), "")
+            Log.i(TAG, "yt-dlp ready: ${version(context)}")
+
+            if (allowUpdate) {
+                // The bundled extractor ages quickly; sites change constantly.
+                update(context)
+            }
         } catch (t: Throwable) {
-            Log.w(TAG, "yt-dlp unavailable; using the native extractor", t)
+            ready.set(false)
+            Diagnostics.setYtDlp(false, "", t.message ?: t.toString())
+            Log.w(TAG, "yt-dlp unavailable", t)
         }
     }
 
     fun isReady(): Boolean = ready.get()
 
+    fun version(context: Context): String =
+        runCatching { YoutubeDL.getInstance().version(context) }.getOrNull().orEmpty()
+
+    /** Fetch the newest yt-dlp release. Returns true if it completed. */
+    fun update(context: Context): Boolean {
+        if (!ready.get()) return false
+        return try {
+            YoutubeDL.getInstance().updateYoutubeDL(context.applicationContext, UpdateChannel.STABLE)
+            Diagnostics.setYtDlp(true, version(context), "")
+            Log.i(TAG, "yt-dlp updated to ${version(context)}")
+            true
+        } catch (t: Throwable) {
+            // A failed update is not fatal — the bundled version still works.
+            Diagnostics.setYtDlp(true, version(context), "update failed: ${t.message}")
+            Log.w(TAG, "yt-dlp update failed", t)
+            false
+        }
+    }
+
     /** Formats for [url], or null when yt-dlp is unavailable or found nothing. */
     fun formats(url: String): MediaInfo? {
-        if (!ready.get()) return null
+        if (!ready.get()) {
+            Diagnostics.report("yt-dlp is not available")
+            return null
+        }
         return try {
             val info = YoutubeDL.getInstance().getInfo(url)
             val list = info.formats.orEmpty().mapNotNull { f ->
@@ -56,11 +88,14 @@ object YtDlp {
                 )
             }
             if (list.isEmpty()) {
+                Diagnostics.report("yt-dlp returned no formats")
                 null
             } else {
+                Diagnostics.report("yt-dlp: ${list.size} format(s)")
                 MediaInfo(info.title ?: info.fulltitle ?: "video", list)
             }
         } catch (t: Throwable) {
+            Diagnostics.report("yt-dlp error: ${t.message ?: t.toString()}")
             Log.w(TAG, "yt-dlp could not extract $url", t)
             null
         }

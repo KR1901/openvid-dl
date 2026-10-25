@@ -24,12 +24,23 @@
 # ---------------------------------------------------------------------------
 # youtubedl-android
 #
-# It maps yt-dlp's --dump-json output onto its mapper classes with Jackson
-# reflection. R8 would rename or strip those fields and silently break
-# extraction, so the whole library is kept.
+# CRITICAL: this library ships its rules as `proguard-rules.pro`, NOT
+# `consumer-rules.pro`, so they are NOT applied to consumers. Without the
+# commons-compress keep below, R8 (especially in full mode) mangles the archiver
+# the library uses to unpack the bundled Python at init — init then throws,
+# yt-dlp never becomes ready, and extraction silently falls back to the native
+# extractor. That is the bug this rule fixes.
+#
+# It also maps yt-dlp's --dump-json output onto its mapper classes with Jackson
+# reflection, so those fields must survive renaming too.
 # ---------------------------------------------------------------------------
--keep class com.yausername.youtubedl_android.** { *; }
+-keep class com.yausername.** { *; }
 -keep class com.yausername.youtubedl_android.mapper.** { *; }
+-keep class org.apache.commons.compress.** { *; }
+-keep class org.tukaani.xz.** { *; }
+-keep class org.apache.commons.io.** { *; }
+-dontwarn org.apache.commons.**
+-dontwarn org.tukaani.**
 
 # Jackson needs annotations and generic signatures at runtime.
 -keepattributes RuntimeVisibleAnnotations

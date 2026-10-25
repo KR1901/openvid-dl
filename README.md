@@ -21,6 +21,10 @@ page in the built-in browser, and download any — or every — video on it.
   headers they need, and our own Rust downloader then fetches the bytes — so
   ffmpeg is not bundled and nothing is downloaded twice. If yt-dlp is
   unavailable or fails, extraction falls back to the native extractor.
+- **Diagnostics in Settings.** Because that fallback is silent by design, the
+  Settings screen reports whether yt-dlp and the filter engine are actually up,
+  lets you update yt-dlp, and can run an extraction against any URL and show the
+  raw outcome — so a failure is reportable rather than invisible.
 - **Ad and tracker blocking.** Every sub-resource request is filtered through
   Brave's `adblock` engine (the one in the Brave browser) against a bundled
   AdGuard rule list, so pages load cleaner and faster. The page itself is never

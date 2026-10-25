@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.util.Log
 import dev.kr1901.openvid.data.AppSettings
+import dev.kr1901.openvid.data.Diagnostics
 import dev.kr1901.openvid.engine.NativeEngine
 import dev.kr1901.openvid.engine.YtDlp
 
@@ -26,18 +27,22 @@ class OpenVidApp : Application() {
     }
 
     /**
-     * Both of these are slow enough to matter, so they happen off the main
-     * thread at startup. Until each finishes, the app simply behaves as if that
-     * feature were absent — extraction falls back to the native extractor, and
-     * nothing is blocked.
+     * yt-dlp init and filter parsing are both slow enough to matter, so they
+     * happen off the main thread at startup. Status is published to
+     * [Diagnostics] and shown in Settings — these failures are otherwise
+     * invisible, because extraction silently falls back to the native extractor.
      */
     private fun warmUp() {
         Thread {
-            YtDlp.init(this)
+            YtDlp.init(this, allowUpdate = !AppSettings.ytDlpUpdated.value)
+            if (YtDlp.isReady()) {
+                AppSettings.markYtDlpUpdated()
+            }
 
             runCatching {
                 val rules = assets.open(FILTERS_ASSET).bufferedReader().use { it.readText() }
                 val ok = NativeEngine.initBlocker(rules)
+                Diagnostics.setAdblock(ok)
                 Log.i(TAG, "adblock engine ready: $ok")
             }.onFailure { Log.w(TAG, "could not load filters", it) }
         }.apply { isDaemon = true }.start()

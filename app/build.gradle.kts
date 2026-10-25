@@ -40,8 +40,8 @@ android {
         applicationId = "dev.kr1901.openvid"
         minSdk = 31
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.7.0"
+        versionCode = 8
+        versionName = "0.8.0"
         // Ship only the locales we actually have strings for; this drops the
         // translated resources every androidx library carries.
         resourceConfigurations += listOf("en", "ru")

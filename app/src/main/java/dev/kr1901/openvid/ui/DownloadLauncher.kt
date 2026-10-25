@@ -1,7 +1,9 @@
 package dev.kr1901.openvid.ui
 
 import android.content.Context
+import dev.kr1901.openvid.data.Diagnostics
 import dev.kr1901.openvid.data.DownloadService
+import dev.kr1901.openvid.engine.ExtractException
 import dev.kr1901.openvid.engine.MediaFormat
 import dev.kr1901.openvid.engine.MediaInfo
 import dev.kr1901.openvid.engine.MediaInfoParser
@@ -11,13 +13,30 @@ import org.json.JSONObject
 
 /**
  * Metadata for a URL, preferring yt-dlp (far broader site coverage) and falling
- * back to the native Rust extractor. Blocking — call from a background thread.
+ * back to the native Rust extractor.
+ *
+ * If both fail the thrown message names *both* outcomes, because otherwise a
+ * broken yt-dlp is indistinguishable from a site the native extractor can't read.
+ * Blocking — call from a background thread.
  */
 fun resolveMedia(url: String): MediaInfo {
     YtDlp.formats(url)?.let { info ->
         if (info.formats.isNotEmpty()) return info
     }
-    return MediaInfoParser.parse(NativeEngine.extractFormats(url))
+    val ytDlpNote = Diagnostics.lastReport.value
+
+    val native = runCatching { MediaInfoParser.parse(NativeEngine.extractFormats(url)) }
+    native.getOrNull()?.let { return it }
+
+    val nativeNote = native.exceptionOrNull()?.message ?: "unknown error"
+    val combined = buildString {
+        append("yt-dlp: ")
+        append(if (ytDlpNote.isBlank()) "no result" else ytDlpNote)
+        append("\nnative extractor: ")
+        append(nativeNote)
+    }
+    Diagnostics.report(combined)
+    throw ExtractException(combined)
 }
 
 /** All formats for a URL. Blocking — call from a background dispatcher. */
