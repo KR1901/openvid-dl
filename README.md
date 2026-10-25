@@ -21,6 +21,11 @@ page in the built-in browser, and download any — or every — video on it.
   headers they need, and our own Rust downloader then fetches the bytes — so
   ffmpeg is not bundled and nothing is downloaded twice. If yt-dlp is
   unavailable or fails, extraction falls back to the native extractor.
+- **VK, properly.** yt-dlp's VK extractor only accepts a single host prefix, so
+  real URLs like `vksport.m.vkvideo.ru/video-1_2` match nothing and drop to the
+  generic extractor. openvid-dl rewrites those to a canonical form before asking
+  yt-dlp, and passes the in-app browser's cookies and user agent through, so
+  login-gated VK pages work too.
 - **Diagnostics in Settings.** Because that fallback is silent by design, the
   Settings screen reports whether yt-dlp and the filter engine are actually up,
   lets you update yt-dlp, and can run an extraction against any URL and show the
