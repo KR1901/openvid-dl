@@ -20,13 +20,12 @@ pub fn download(
     url: &str,
     dest: &Path,
     connections: usize,
+    headers: &[(String, String)],
     progress: &dyn Fn(u64, u64),
 ) -> Result<()> {
     let base = Url::parse(url).context("invalid HLS URL")?;
 
-    let mut resp = agent
-        .get(url)
-        .header("User-Agent", UA)
+    let mut resp = request(agent, url, headers)
         .call()
         .context("failed to fetch the HLS playlist")?;
     let text = resp
@@ -36,9 +35,7 @@ pub fn download(
 
     let (media_url, media_text) = if text.contains("#EXT-X-STREAM-INF") {
         let variant = pick_variant(&text, &base)?;
-        let mut r = agent
-            .get(variant.as_str())
-            .header("User-Agent", UA)
+        let mut r = request(agent, variant.as_str(), headers)
             .call()
             .context("failed to fetch the HLS variant playlist")?;
         let t = r.body_mut().read_to_string()?;
@@ -62,12 +59,11 @@ pub fn download(
         .map(|(i, seg)| {
             let agent = agent.clone();
             let seg = seg.clone();
+            let headers = headers.to_vec();
             let path = parts.join(format!("{i:06}.ts"));
             let done = done.clone();
             move || -> Result<()> {
-                let resp = agent
-                    .get(&seg)
-                    .header("User-Agent", UA)
+                let resp = request(&agent, &seg, &headers)
                     .call()
                     .with_context(|| format!("segment {i} failed"))?;
                 if !resp.status().is_success() {
@@ -100,6 +96,20 @@ pub fn download(
     }
     std::fs::remove_dir_all(&parts).ok();
     Ok(())
+}
+
+fn request(
+    agent: &Agent,
+    url: &str,
+    headers: &[(String, String)],
+) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    let mut builder = agent.get(url).header("User-Agent", UA);
+    for (key, value) in headers {
+        if !key.eq_ignore_ascii_case("user-agent") {
+            builder = builder.header(key, value);
+        }
+    }
+    builder
 }
 
 fn pick_variant(text: &str, base: &Url) -> Result<Url> {

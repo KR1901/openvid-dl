@@ -56,12 +56,14 @@ pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_download<'loc
     dest: JString<'local>,
     connections: jint,
     total_hint: jlong,
+    headers_json: JString<'local>,
     callback: JObject<'local>,
 ) -> jboolean {
     unowned_env
         .with_env(|env| -> jni::errors::Result<_> {
             let url: String = url.to_string();
             let dest: String = dest.to_string();
+            let raw_headers: String = headers_json.to_string();
             let callback: Global<JObject<'static>> = env.new_global_ref(callback)?;
 
             let protocol = if url.contains(".m3u8") { "hls" } else { "direct" };
@@ -71,12 +73,28 @@ pub extern "system" fn Java_dev_kr1901_openvid_engine_NativeEngine_download<'loc
                 connections: if connections < 1 { 1 } else { connections as usize },
                 protocol: protocol.to_string(),
                 total_hint: if total_hint > 0 { Some(total_hint as u64) } else { None },
+                headers: parse_headers(&raw_headers),
             };
 
             let ok = run_download(&req, &callback);
             Ok(if ok { JNI_TRUE } else { JNI_FALSE })
         })
         .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+/// Parse a `{"Header": "value"}` JSON object into header pairs. Anything
+/// malformed simply yields no headers.
+fn parse_headers(raw: &str) -> Vec<(String, String)> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value.as_object().map(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
 }
 
 fn run_download(req: &DownloadRequest, callback: &Global<JObject<'static>>) -> bool {

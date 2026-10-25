@@ -1,10 +1,13 @@
 name: Build APK
 
 # Builds the Android app in the cloud so you don't need Android Studio.
-# Produces both a debug and a release APK.
 #
-#   * runs on every push to main, on tags like v0.3.0, and manually
-#   * attaches the APKs to a GitHub Release when a tag is pushed
+#   * runs on every push to main, on tags like v0.7.0, and manually
+#   * attaches the APK to a GitHub Release when a tag is pushed
+#
+# Only the release APK is built: it is signed (with your key when the secrets
+# below are set, otherwise the debug key) and installable, and the debug build
+# would add ~90 MB of bundled Python for yt-dlp for no benefit.
 #
 # Release signing (optional): add these repository secrets and the release
 # APK will be signed with your key instead of falling back to the debug key.
@@ -41,17 +44,19 @@ jobs:
           SDKMANAGER=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager 2>/dev/null | head -1)
           echo "sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" "platforms;android-37" > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-37" > /dev/null || true
           "$SDKMANAGER" "ndk;30.0.16248370" > /dev/null 2>&1 || true
           NDK_DIR="$ANDROID_SDK_ROOT/ndk/30.0.16248370"
           if [ ! -d "$NDK_DIR" ]; then
             NDK_DIR=$(ls -d "$ANDROID_SDK_ROOT"/ndk/* 2>/dev/null | sort -V | tail -1)
           fi
           echo "Using NDK: $NDK_DIR"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> "$GITHUB_ENV"
+          {
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            echo "ANDROID_HOME=$ANDROID_SDK_ROOT"
+            echo "ANDROID_NDK_HOME=$NDK_DIR"
+            echo "ANDROID_NDK_ROOT=$NDK_DIR"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Rust with Android targets
         uses: dtolnay/rust-toolchain@stable
@@ -70,17 +75,11 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Prepare release signing (if secrets are set)
+      - name: Prepare release signing
         run: |
           if [ -n "${KEYSTORE_BASE64:-}" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
-            echo "Release keystore configured."
-          else
-            echo "No release keystore secret set — release APK will use the debug key."
           fi
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -91,38 +90,27 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
-
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: openvid-dl-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+      - name: Show APK size
+        run: ls -lh app/build/outputs/apk/release/
 
-      - name: Upload release APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
           name: openvid-dl-release-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
-      # Give the release assets descriptive, versioned names instead of the
-      # generic app-release.apk / app-debug.apk.
       - name: Stage release assets
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          set -e
           mkdir -p dist
-          cp app/build/outputs/apk/release/*.apk "dist/openvid-dl-${GITHUB_REF_NAME}-release.apk"
-          cp app/build/outputs/apk/debug/*.apk "dist/openvid-dl-${GITHUB_REF_NAME}-debug.apk"
+          cp app/build/outputs/apk/release/*.apk "dist/openvid-dl-${GITHUB_REF_NAME}-arm64.apk"
           ls -l dist
 
-      - name: Attach APKs to GitHub Release
+      - name: Attach APK to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:

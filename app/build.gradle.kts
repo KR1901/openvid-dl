@@ -40,11 +40,11 @@ android {
         applicationId = "dev.kr1901.openvid"
         minSdk = 31
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.6.0"
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
+        versionCode = 7
+        versionName = "0.7.0"
+        // Ship only the locales we actually have strings for; this drops the
+        // translated resources every androidx library carries.
+        resourceConfigurations += listOf("en", "ru")
     }
 
     signingConfigs {
@@ -62,6 +62,8 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // Emulators are x86_64; real devices are arm64.
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         }
         release {
             isMinifyEnabled = true
@@ -75,6 +77,9 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // arm64 only. Every Android 12+ phone that matters is 64-bit ARM, and
+            // each extra ABI would add ~15 MB of bundled Python for yt-dlp.
+            ndk { abiFilters += listOf("arm64-v8a") }
         }
     }
 
@@ -102,9 +107,31 @@ android {
     }
 
     packaging {
+        // youtubedl-android requires the native libraries to be extracted at
+        // install time; it also means the .so files are compressed in the APK,
+        // which is the smaller download.
         jniLibs {
-            useLegacyPackaging = false
+            useLegacyPackaging = true
         }
+        resources {
+            excludes += setOf(
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*",
+                "META-INF/*.kotlin_module",
+                "META-INF/versions/**",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json",
+            )
+        }
+    }
+
+    // The dependency metadata block is only used by Play; drop it from the APK.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 }
 
@@ -120,6 +147,12 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    // yt-dlp, used purely as an extractor (see YtDlp.kt). The `ffmpeg` and
+    // `aria2c` modules are deliberately NOT included: we never ask yt-dlp to
+    // download or merge, so they would add ~40 MB for nothing.
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 

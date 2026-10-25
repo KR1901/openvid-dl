@@ -23,6 +23,9 @@ pub struct DownloadRequest {
     pub connections: usize,
     pub protocol: String,
     pub total_hint: Option<u64>,
+    /// Extra request headers (e.g. `Referer`) that the extractor reported as
+    /// required for this URL. Many CDNs 403 without them.
+    pub headers: Vec<(String, String)>,
 }
 
 pub fn download(agent: &Agent, req: &DownloadRequest, progress: &dyn Fn(u64, u64)) -> Result<()> {
@@ -30,7 +33,14 @@ pub fn download(agent: &Agent, req: &DownloadRequest, progress: &dyn Fn(u64, u64
         std::fs::create_dir_all(parent).ok();
     }
     match req.protocol.as_str() {
-        "hls" => crate::hls::download(agent, &req.url, &req.dest, req.connections, progress),
+        "hls" => crate::hls::download(
+            agent,
+            &req.url,
+            &req.dest,
+            req.connections,
+            &req.headers,
+            progress,
+        ),
         _ => download_http(agent, req, progress),
     }
 }
@@ -40,8 +50,8 @@ struct Probe {
     ranges: bool,
 }
 
-fn probe(agent: &Agent, url: &str) -> Result<Probe> {
-    if let Ok(resp) = agent.head(url).header("User-Agent", UA).call() {
+fn probe(agent: &Agent, req: &DownloadRequest) -> Result<Probe> {
+    if let Ok(resp) = with_headers(agent.head(&req.url), req).call() {
         if resp.status().is_success() {
             let headers = resp.headers();
             let total = headers
@@ -59,9 +69,7 @@ fn probe(agent: &Agent, url: &str) -> Result<Probe> {
         }
     }
 
-    let resp = agent
-        .get(url)
-        .header("User-Agent", UA)
+    let resp = with_headers(agent.get(&req.url), req)
         .header("Range", "bytes=0-0")
         .call()
         .context("failed to reach the media URL")?;
@@ -80,12 +88,27 @@ fn probe(agent: &Agent, url: &str) -> Result<Probe> {
     Ok(Probe { total, ranges })
 }
 
+/// Attach the browser user agent plus any extractor-provided headers.
+fn with_headers(
+    mut builder: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
+    req: &DownloadRequest,
+) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    builder = builder.header("User-Agent", UA);
+    for (key, value) in &req.headers {
+        if key.eq_ignore_ascii_case("user-agent") {
+            continue;
+        }
+        builder = builder.header(key, value);
+    }
+    builder
+}
+
 fn parse_total(value: &str) -> Option<u64> {
     value.rsplit('/').next()?.trim().parse::<u64>().ok()
 }
 
 fn download_http(agent: &Agent, req: &DownloadRequest, progress: &dyn Fn(u64, u64)) -> Result<()> {
-    let probe = probe(agent, &req.url)?;
+    let probe = probe(agent, req)?;
     let known_total = probe.total.or(req.total_hint);
 
     if probe.ranges && req.connections > 1 && probe.total.is_some() {
@@ -116,8 +139,9 @@ fn download_http(agent: &Agent, req: &DownloadRequest, progress: &dyn Fn(u64, u6
                 let agent = agent.clone();
                 let url = req.url.clone();
                 let dest = req.dest.clone();
+                let headers = req.headers.clone();
                 let done = done.clone();
-                move || fetch_range(&agent, &url, &dest, start, end, &done)
+                move || fetch_range(&agent, &url, &dest, &headers, start, end, &done)
             })
             .collect();
 
@@ -131,13 +155,18 @@ fn fetch_range(
     agent: &Agent,
     url: &str,
     dest: &Path,
+    headers: &[(String, String)],
     start: u64,
     end: u64,
     done: &AtomicU64,
 ) -> Result<()> {
-    let resp = agent
-        .get(url)
-        .header("User-Agent", UA)
+    let mut builder = agent.get(url).header("User-Agent", UA);
+    for (key, value) in headers {
+        if !key.eq_ignore_ascii_case("user-agent") {
+            builder = builder.header(key, value);
+        }
+    }
+    let resp = builder
         .header("Range", format!("bytes={start}-{end}"))
         .call()
         .with_context(|| format!("range {start}-{end} request failed"))?;
@@ -170,15 +199,18 @@ fn single_stream(
     let agent = agent.clone();
     let url = req.url.clone();
     let dest = req.dest.clone();
+    let headers = req.headers.clone();
     let done = Arc::new(AtomicU64::new(0));
     let counter = done.clone();
 
     let job = move || -> Result<()> {
-        let resp = agent
-            .get(&url)
-            .header("User-Agent", UA)
-            .call()
-            .context("request failed")?;
+        let mut builder = agent.get(&url).header("User-Agent", UA);
+        for (key, value) in &headers {
+            if !key.eq_ignore_ascii_case("user-agent") {
+                builder = builder.header(key, value);
+            }
+        }
+        let resp = builder.call().context("request failed")?;
         if !resp.status().is_success() {
             bail!("server returned HTTP {}", resp.status().as_u16());
         }

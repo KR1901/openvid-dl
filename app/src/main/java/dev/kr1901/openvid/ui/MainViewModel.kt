@@ -3,8 +3,6 @@ package dev.kr1901.openvid.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.kr1901.openvid.engine.MediaFormat
-import dev.kr1901.openvid.engine.MediaInfoParser
-import dev.kr1901.openvid.engine.NativeEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,7 +57,7 @@ class MainViewModel : ViewModel() {
 
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { MediaInfoParser.parse(NativeEngine.extractFormats(url)) }
+                runCatching { resolveMedia(url) }
             }
             result.onSuccess { info ->
                 _state.value = _state.value.copy(

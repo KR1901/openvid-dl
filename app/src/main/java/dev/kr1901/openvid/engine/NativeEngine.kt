@@ -19,6 +19,7 @@ object NativeEngine {
      *
      * @param connections parallel connections to use per file.
      * @param totalHint   expected size in bytes, or 0 if unknown.
+     * @param headersJson a `{"Header":"value"}` object of extra request headers.
      * @param callback    receives (downloaded, total) byte counts.
      * @return true on success.
      */
@@ -27,6 +28,7 @@ object NativeEngine {
         destPath: String,
         connections: Int,
         totalHint: Long,
+        headersJson: String,
         callback: ProgressCallback,
     ): Boolean
 

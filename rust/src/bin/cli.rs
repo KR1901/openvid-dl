@@ -73,6 +73,7 @@ fn main() -> Result<()> {
         connections: args.connections,
         protocol: format.protocol.clone(),
         total_hint: format.filesize,
+        headers: Vec::new(),
     };
 
     let bar = indicatif::ProgressBar::new(format.filesize.unwrap_or(0));

@@ -15,6 +15,12 @@ page in the built-in browser, and download any — or every — video on it.
   its own page, history and list of detected videos. The address bar sits at the
   bottom where your thumb is, the tab switcher is one tap away, and the bar lifts
   above the keyboard while you type.
+- **yt-dlp extraction.** [yt-dlp](https://github.com/yt-dlp/yt-dlp) is bundled
+  and used purely as an *extractor*, which is what gives real coverage of
+  JS-driven sites (VK, and most others). It reports format URLs and the HTTP
+  headers they need, and our own Rust downloader then fetches the bytes — so
+  ffmpeg is not bundled and nothing is downloaded twice. If yt-dlp is
+  unavailable or fails, extraction falls back to the native extractor.
 - **Ad and tracker blocking.** Every sub-resource request is filtered through
   Brave's `adblock` engine (the one in the Brave browser) against a bundled
   AdGuard rule list, so pages load cleaner and faster. The page itself is never
@@ -78,6 +84,23 @@ Ad/tracker filtering uses Brave's `adblock` crate with the rule list in
 sections, Adblock Plus syntax). The engine is built once on a background thread
 at startup; until it is ready nothing is blocked.
 
+## App size
+
+The APK is ~25 MB. Getting there took deliberate choices, since bundling yt-dlp
+naively costs far more:
+
+- **yt-dlp for extraction only.** The `youtubedl-android` `ffmpeg` and `aria2c`
+  modules are not included — we never ask yt-dlp to download or merge, so they
+  would add ~40 MB for nothing.
+- **arm64-v8a only.** Each additional ABI would add ~15 MB of bundled Python.
+  Every Android 12+ phone that matters is 64-bit ARM; emulator builds (x86_64)
+  are still produced by the debug variant.
+- **Compressed native libraries** (`useLegacyPackaging`), which youtubedl-android
+  requires anyway and which shrinks the download.
+- **R8 in full mode** plus resource shrinking, with keep rules for the JNI
+  surface and yt-dlp's Jackson-mapped classes.
+- **Locale filtering** (`en`, `ru`) and `META-INF` exclusions.
+
 ## Layout
 
 ```
@@ -111,6 +134,9 @@ at startup; until it is ready nothing is blocked.
 - **cargo-ndk**: `cargo install cargo-ndk`, and `ANDROID_NDK_HOME` pointing at an NDK.
 
 ### Build the APK
+
+> The release APK is **arm64-v8a** (every Android 12+ phone that matters).
+> Build the debug variant for an x86_64 emulator.
 
 ```bash
 ./gradlew :app:assembleDebug     # -> app/build/outputs/apk/debug/app-debug.apk

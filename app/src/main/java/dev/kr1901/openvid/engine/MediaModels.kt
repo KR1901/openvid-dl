@@ -15,6 +15,11 @@ data class MediaFormat(
     val bitrate: Long?,
     val filesize: Long?,
     val note: String,
+    /**
+     * Extra request headers the extractor says this URL needs (yt-dlp reports
+     * `http_headers`). Many CDNs 403 without them.
+     */
+    val headers: Map<String, String>? = null,
 ) {
     val isAudio: Boolean get() = kind == "audio"
 

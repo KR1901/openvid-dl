@@ -34,6 +34,7 @@ class DownloadService : Service() {
         val fileName: String,
         val mime: String,
         val totalHint: Long,
+        val headersJson: String,
     )
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -84,6 +85,7 @@ class DownloadService : Service() {
                 tmp.absolutePath,
                 AppSettings.connections.value,
                 job.totalHint,
+                job.headersJson,
                 ProgressCallback { downloaded, total ->
                     DownloadRepository.progress(id, downloaded, total)
                     notifySummary()
@@ -109,6 +111,7 @@ class DownloadService : Service() {
             fileName = intent.getStringExtra(EXTRA_FILE_NAME) ?: "video.mp4",
             mime = intent.getStringExtra(EXTRA_MIME) ?: "video/mp4",
             totalHint = intent.getLongExtra(EXTRA_TOTAL, 0L),
+            headersJson = intent.getStringExtra(EXTRA_HEADERS) ?: "{}",
         )
     }
 
@@ -165,6 +168,7 @@ class DownloadService : Service() {
         const val EXTRA_FILE_NAME = "file_name"
         const val EXTRA_MIME = "mime"
         const val EXTRA_TOTAL = "total"
+        const val EXTRA_HEADERS = "headers"
 
         fun start(
             context: Context,
@@ -173,6 +177,7 @@ class DownloadService : Service() {
             fileName: String,
             mime: String,
             total: Long,
+            headersJson: String = "{}",
         ) {
             val intent = Intent(context, DownloadService::class.java).apply {
                 putExtra(EXTRA_URL, url)
@@ -180,6 +185,7 @@ class DownloadService : Service() {
                 putExtra(EXTRA_FILE_NAME, fileName)
                 putExtra(EXTRA_MIME, mime)
                 putExtra(EXTRA_TOTAL, total)
+                putExtra(EXTRA_HEADERS, headersJson)
             }
             context.startForegroundService(intent)
         }
