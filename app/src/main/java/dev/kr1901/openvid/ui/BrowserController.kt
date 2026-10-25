@@ -315,21 +315,34 @@ class BrowserController(private val context: Context) {
         private const val PROBE_JS = """
             (function () {
               var out = [];
-              function push(u) { if (u && u.indexOf('blob:') !== 0 && out.indexOf(u) < 0) out.push(u); }
-              document.querySelectorAll('video,audio,source').forEach(function (e) {
-                if (e.src) push(e.src);
-                if (e.currentSrc) push(e.currentSrc);
-                if (e.getAttribute) {
-                  var d = e.getAttribute('data-src');
-                  if (d) push(d);
-                }
+              function push(u) {
+                if (u && u.indexOf('blob:') !== 0 && u.indexOf('data:') !== 0 && out.indexOf(u) < 0) out.push(u);
+              }
+              // Scan the page source itself. Many players (VK included) put the
+              // stream URLs in an inline <script> rather than in a DOM element,
+              // and the page reaches them fine because the browser is logged in
+              // and not being reset — unlike a server-side fetch.
+              function scan(text) {
+                if (!text) return;
+                var t = text.replace(/\\\//g, '/').replace(/\\u0026/gi, '&').replace(/&amp;/g, '&');
+                if (t.length > 3000000) t = t.slice(0, 3000000);
+                var re = /https?:\/\/[^\s"'<>\\]+?\.(?:mp4|m3u8|webm|m4v|mov)(?:\?[^\s"'<>\\]*)?/gi;
+                var m;
+                while ((m = re.exec(t)) !== null) push(m[0]);
+              }
+              try { scan(document.documentElement.innerHTML); } catch (e) {}
+
+              document.querySelectorAll('video,audio,source,iframe,embed').forEach(function (el) {
+                ['src', 'data-src', 'currentSrc'].forEach(function (attr) {
+                  try { var v = el[attr]; if (v) push(v); } catch (e) {}
+                });
               });
-              document.querySelectorAll('meta[property="og:video"],meta[property="og:video:url"],meta[property="og:video:secure_url"]').forEach(function (m) {
+              document.querySelectorAll('meta[property^="og:video"]').forEach(function (m) {
                 var c = m.getAttribute('content');
                 if (c) push(c);
               });
               document.querySelectorAll('a[href]').forEach(function (a) {
-                if (/\.(mp4|m3u8|webm|mkv|mov|m4a|mp3)(\?|#|${'$'})/i.test(a.href)) push(a.href);
+                if (/\.(mp4|m3u8|webm|mkv|mov|m4a|mp3)(\?|#)/i.test(a.href)) push(a.href);
               });
               return JSON.stringify(out);
             })();

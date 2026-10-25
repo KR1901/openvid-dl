@@ -133,6 +133,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodyLarge,
             )
 
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "If a site fails to extract, open it in the Browser tab and sign in " +
+                    "first — extraction reuses the browser's cookies. VK in particular " +
+                    "needs a session for most videos.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             Spacer(Modifier.height(14.dp))
             OutlinedTextField(
                 value = testUrl,

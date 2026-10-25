@@ -68,19 +68,26 @@ object YtDlp {
     fun version(context: Context): String =
         runCatching { YoutubeDL.getInstance().version(context) }.getOrNull().orEmpty()
 
-    /** Fetch the newest yt-dlp release. Returns true if it completed. */
+    /**
+     * Fetch the newest yt-dlp release, trying the stable channel then nightly.
+     * Returns true if either completed.
+     */
     fun update(context: Context): Boolean {
         if (!ready.get()) return false
-        return try {
-            YoutubeDL.getInstance().updateYoutubeDL(context.applicationContext, UpdateChannel.STABLE)
-            Diagnostics.setYtDlp(true, version(context), "")
-            Log.i(TAG, "yt-dlp updated to ${version(context)}")
-            true
-        } catch (t: Throwable) {
-            Diagnostics.setYtDlp(true, version(context), "update failed: ${t.message}")
-            Log.w(TAG, "yt-dlp update failed", t)
-            false
+        var failure: String? = null
+        for (channel in listOf(UpdateChannel.STABLE, UpdateChannel.NIGHTLY)) {
+            try {
+                YoutubeDL.getInstance().updateYoutubeDL(context.applicationContext, channel)
+                Diagnostics.setYtDlp(true, version(context), "")
+                Log.i(TAG, "yt-dlp updated to ${version(context)}")
+                return true
+            } catch (t: Throwable) {
+                failure = t.message
+                Log.w(TAG, "yt-dlp update via $channel failed", t)
+            }
         }
+        Diagnostics.setYtDlp(true, version(context), "update failed: $failure")
+        return false
     }
 
     /** Formats for [url], or null when yt-dlp is unavailable or found nothing. */

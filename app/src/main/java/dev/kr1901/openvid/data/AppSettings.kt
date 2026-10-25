@@ -13,7 +13,7 @@ object AppSettings {
     private const val PREFS = "openvid_settings"
     private const val KEY_THEME = "theme_mode"
     private const val KEY_CONNECTIONS = "connections"
-    private const val KEY_YTDLP_UPDATED = "ytdlp_updated"
+    private const val KEY_YTDLP_UPDATED_AT = "ytdlp_updated_at"
 
     private var prefs: SharedPreferences? = null
 
@@ -23,9 +23,9 @@ object AppSettings {
     private val _connections = MutableStateFlow(8)
     val connections: StateFlow<Int> = _connections.asStateFlow()
 
-    /** Whether we have already pulled a fresh yt-dlp once on this install. */
-    private val _ytDlpUpdated = MutableStateFlow(false)
-    val ytDlpUpdated: StateFlow<Boolean> = _ytDlpUpdated.asStateFlow()
+    /** When we last tried to refresh yt-dlp, so we can throttle to daily. */
+    private val _ytDlpUpdatedAt = MutableStateFlow(0L)
+    val ytDlpUpdatedAt: StateFlow<Long> = _ytDlpUpdatedAt.asStateFlow()
 
     fun init(context: Context) {
         val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -34,7 +34,7 @@ object AppSettings {
             ThemeMode.valueOf(p.getString(KEY_THEME, ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name)
         }.getOrDefault(ThemeMode.SYSTEM)
         _connections.value = p.getInt(KEY_CONNECTIONS, 8).coerceIn(1, 32)
-        _ytDlpUpdated.value = p.getBoolean(KEY_YTDLP_UPDATED, false)
+        _ytDlpUpdatedAt.value = p.getLong(KEY_YTDLP_UPDATED_AT, 0L)
     }
 
     fun setThemeMode(mode: ThemeMode) {
@@ -49,7 +49,12 @@ object AppSettings {
     }
 
     fun markYtDlpUpdated() {
-        _ytDlpUpdated.value = true
-        prefs?.edit()?.putBoolean(KEY_YTDLP_UPDATED, true)?.apply()
+        val now = System.currentTimeMillis()
+        _ytDlpUpdatedAt.value = now
+        prefs?.edit()?.putLong(KEY_YTDLP_UPDATED_AT, now)?.apply()
     }
+
+    /** True when we haven't tried refreshing yt-dlp recently. */
+    fun ytDlpUpdateStale(maxAgeMs: Long = 24L * 60L * 60L * 1000L): Boolean =
+        System.currentTimeMillis() - _ytDlpUpdatedAt.value > maxAgeMs
 }

@@ -34,7 +34,9 @@ class OpenVidApp : Application() {
      */
     private fun warmUp() {
         Thread {
-            YtDlp.init(this, allowUpdate = !AppSettings.ytDlpUpdated.value)
+            // Refresh yt-dlp at most once a day: extractors age quickly and a
+            // stale one shows up as a confusing extractor error.
+            YtDlp.init(this, allowUpdate = AppSettings.ytDlpUpdateStale())
             if (YtDlp.isReady()) {
                 AppSettings.markYtDlpUpdated()
             }
