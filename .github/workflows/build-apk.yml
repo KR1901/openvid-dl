@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -96,12 +97,42 @@ jobs:
       - name: Show APK size
         run: ls -lh app/build/outputs/apk/release/
 
+      # The versioned APK is attached to GitHub Releases separately. Keep only a
+      # short-lived Actions copy and clear older build artifacts before uploading.
+      - name: Prune previous APK artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner, repo, per_page: 100 }
+            );
+            const previous = artifacts.filter(
+              item => item.name === "openvid-dl-release-apk" && !item.expired
+            );
+            for (const artifact of previous) {
+              core.info(`Deleting old APK artifact ${artifact.id} (${artifact.size_in_bytes} bytes)`);
+              try {
+                await github.rest.actions.deleteArtifact({
+                  owner,
+                  repo,
+                  artifact_id: artifact.id,
+                });
+              } catch (error) {
+                const status = error.status || error.response?.status;
+                if (status === 404 || status === 410) continue;
+                throw error;
+              }
+            }
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
           name: openvid-dl-release-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
+          retention-days: 1
 
       - name: Stage release assets
         if: startsWith(github.ref, 'refs/tags/')
